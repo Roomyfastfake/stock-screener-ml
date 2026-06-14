@@ -11,6 +11,7 @@ from typing import Callable
 
 import pandas as pd
 
+from . import bayes
 from . import indicators as ind
 from . import score as sc
 
@@ -75,5 +76,44 @@ def make_signal_fn(weights: dict[str, float] | None = None) -> Callable[[pd.Data
         factors = build_features(price_window)
         composite = sc.composite_score(factors, weights)
         return composite.iloc[-1]
+
+    return signal_fn
+
+
+def make_bayes_signal_fn(prior_var: float = 1.0, horizon: int = 21,
+                         shrink: bool = False, min_obs: int = 250,
+                         ) -> Callable[[pd.DataFrame], pd.Series]:
+    """Build a *walk-forward* Bayesian ``signal_fn`` for the backtest.
+
+    At each rebalance the backtest passes ``window = prices.loc[:r]`` -- the
+    price history available as of ``r``. We refit the factor-weight posterior on
+    that window only and score the latest row with the learned weights, so the
+    weights used at ``r`` depend on nothing after ``r``.
+
+    Lookahead is avoided on two fronts:
+
+    * Training targets: ``bayes.fit_weights`` regresses each factor row on its
+      ``horizon``-period *forward* return. Inside the window, the last
+      ``horizon`` rows have an unrealized (NaN) forward return and are dropped
+      by its ``inner``-join + ``dropna``. Every training row therefore uses only
+      data realized on or before ``r``.
+    * Scoring: the features at the latest row are built from the window only.
+
+    Until ``min_obs`` realized observations exist the signal is all-NaN, so the
+    backtest skips the rebalance (it cannot fit weights on an empty/degenerate
+    sample during warm-up).
+    """
+
+    def signal_fn(price_window: pd.DataFrame) -> pd.Series:
+        factors = build_features(price_window)
+        try:
+            post = bayes.fit_weights(factors, price_window, horizon=horizon,
+                                     prior_var=prior_var)
+        except ValueError:                       # no realized training rows yet
+            return pd.Series(float("nan"), index=price_window.columns)
+        if post.n_obs < min_obs:                 # too little history to trust
+            return pd.Series(float("nan"), index=price_window.columns)
+        weights = post.shrunk_weights() if shrink else post.weights
+        return sc.composite_score(factors, weights).iloc[-1]
 
     return signal_fn
