@@ -18,8 +18,8 @@ to :func:`screener.score.composite_score`.
 
 Lookahead note: the *estimator* is agnostic to time -- it just takes ``X`` and
 ``y``. Avoiding lookahead is the caller's job: fit only on data whose forward
-window has already realized. ``screener.backtest`` (step 2) does this
-walk-forward; fitting on the full sample is in-sample research only.
+window has already realized. The current backtest does not do walk-forward
+fitting; fitting on the full sample is in-sample research only.
 """
 from __future__ import annotations
 

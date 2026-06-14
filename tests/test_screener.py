@@ -12,6 +12,7 @@ import traceback
 import numpy as np
 import pandas as pd
 
+import main as cli
 from screener import backtest as bt
 from screener import bayes
 from screener import indicators as ind
@@ -102,6 +103,18 @@ def test_signal_fn_no_lookahead():
     pd.testing.assert_series_equal(base, after, check_names=False)
 
 
+def test_rank_universe_asof_ignores_future_rows():
+    prices = synthetic.make_prices(n_tickers=8, n_days=500, seed=10)
+    t = prices.index[400]
+    base = screen.rank_universe(prices, asof=t)
+
+    poisoned = prices.copy()
+    poisoned.loc[poisoned.index > t] *= np.linspace(2.0, 20.0, len(prices.columns))
+    after = screen.rank_universe(poisoned, asof=t)
+
+    pd.testing.assert_frame_equal(base, after)
+
+
 # --------------------------------------------------------------------------- #
 # backtest
 # --------------------------------------------------------------------------- #
@@ -112,6 +125,44 @@ def test_backtest_runs_and_shapes():
     assert len(res.equity_curve) == len(res.period_returns)
     assert np.isfinite(res.stats["sharpe"])
     assert res.equity_curve.is_monotonic_increasing or res.equity_curve.min() > 0
+
+
+def test_backtest_enters_next_close_after_signal():
+    idx = pd.to_datetime([
+        "2020-01-30",
+        "2020-01-31",
+        "2020-02-03",
+        "2020-02-28",
+        "2020-03-02",
+    ])
+    prices = pd.DataFrame({
+        "A": [100.0, 100.0, 10.0, 999.0, 20.0],
+        "B": [100.0, 100.0, 10.0, 999.0, 5.0],
+    }, index=idx)
+    signal_ends = []
+
+    def signal_fn(window: pd.DataFrame) -> pd.Series:
+        signal_ends.append(window.index[-1])
+        return pd.Series({"A": 1.0, "B": 0.0})
+
+    res = bt.backtest(prices, signal_fn, top_n=1, min_history=1)
+
+    assert signal_ends == [pd.Timestamp("2020-01-31")]
+    assert list(res.holdings) == [pd.Timestamp("2020-02-03")]
+    assert list(res.period_returns.index) == [pd.Timestamp("2020-03-02")]
+    assert np.isclose(res.period_returns.iloc[0], 1.0)  # 20 / 10 - 1
+
+
+def test_backtest_bayes_refuses_until_walk_forward():
+    args = cli.build_parser().parse_args(["backtest", "--synthetic", "--bayes"])
+    try:
+        cli.cmd_backtest(args)
+    except NotImplementedError as exc:
+        msg = str(exc)
+        assert "walk-forward" in msg
+        assert "in-sample" in msg
+    else:
+        raise AssertionError("backtest --bayes should refuse to run")
 
 
 def test_momentum_has_edge_vs_reversed():
