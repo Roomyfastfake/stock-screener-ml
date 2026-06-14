@@ -10,6 +10,9 @@ Examples
 
     # Backtest with fixed, interpretable weights:
     py -3.14 main.py backtest --tickers AAPL MSFT NVDA --start 2018-01-01
+
+    # Backtest with walk-forward Bayesian weights (refit each rebalance, no lookahead):
+    py -3.14 main.py backtest --synthetic --bayes
 """
 from __future__ import annotations
 
@@ -48,13 +51,14 @@ def cmd_rank(args) -> None:
 
 
 def cmd_backtest(args) -> None:
-    if getattr(args, "bayes", False):
-        raise NotImplementedError(
-            "backtest --bayes is disabled until walk-forward fitting is implemented; "
-            "full-sample Bayesian weights would be in-sample/lookahead-biased."
-        )
     prices = _load_prices(args)
-    signal_fn = screen.make_signal_fn(weights=_weights(args, prices))
+    if getattr(args, "bayes", False):
+        # Walk-forward: weights are refit on each rebalance window (past only),
+        # so this is genuinely out-of-sample -- no full-sample lookahead.
+        signal_fn = screen.make_bayes_signal_fn(prior_var=args.prior_var,
+                                                horizon=args.horizon)
+    else:
+        signal_fn = screen.make_signal_fn(weights=_weights(args, prices))
     result = bt.backtest(prices, signal_fn, top_n=args.top_n)
     print(result)
     for k, v in result.stats.items():
@@ -81,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument(
         "--bayes",
         action="store_true",
-        help="use learned Bayesian weights for ranking; disabled for backtests until walk-forward",
+        help="use learned Bayesian weights (full-sample for rank; walk-forward, refit per rebalance, for backtest)",
     )
     common.add_argument("--prior-var", dest="prior_var", type=float, default=1.0)
     common.add_argument("--horizon", type=int, default=21)

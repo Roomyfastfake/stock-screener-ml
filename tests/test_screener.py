@@ -153,16 +153,40 @@ def test_backtest_enters_next_close_after_signal():
     assert np.isclose(res.period_returns.iloc[0], 1.0)  # 20 / 10 - 1
 
 
-def test_backtest_bayes_refuses_until_walk_forward():
+def test_backtest_bayes_runs_walk_forward():
+    """`backtest --bayes` is re-enabled now that it uses the walk-forward path."""
     args = cli.build_parser().parse_args(["backtest", "--synthetic", "--bayes"])
-    try:
-        cli.cmd_backtest(args)
-    except NotImplementedError as exc:
-        msg = str(exc)
-        assert "walk-forward" in msg
-        assert "in-sample" in msg
-    else:
-        raise AssertionError("backtest --bayes should refuse to run")
+    cli.cmd_backtest(args)                          # must not raise
+
+    prices = synthetic.make_prices(n_tickers=20, n_days=900, seed=0)
+    res = bt.backtest(prices, screen.make_bayes_signal_fn(horizon=21), top_n=5)
+    assert len(res.period_returns) > 5             # warm-up skipped, then trades
+    assert np.isfinite(res.stats["sharpe"])
+
+
+def test_bayes_signal_fn_no_lookahead():
+    """Walk-forward weights/signal at t are unchanged when post-t rows are poisoned."""
+    prices = synthetic.make_prices(n_tickers=12, n_days=600, seed=11)
+    t = prices.index[450]
+    sfn = screen.make_bayes_signal_fn(prior_var=1.0, horizon=21, min_obs=100)
+    base = sfn(prices.loc[:t])
+    assert base.notna().any()                      # past warm-up: a real fit, not all-NaN
+
+    poisoned = prices.copy()
+    poisoned.loc[poisoned.index > t] *= 7.0        # wreck the future
+    after = sfn(poisoned.loc[:t])
+    pd.testing.assert_series_equal(base, after, check_names=False)
+
+
+def test_walk_forward_not_full_sample():
+    """Weights fit on the window at t differ from full-sample weights (no peeking)."""
+    prices = synthetic.make_prices(n_tickers=15, n_days=600, seed=2)
+    t = prices.index[300]
+    win = prices.loc[:t]
+    wf = bayes.fit_weights(screen.build_features(win), win, horizon=21).weights
+    full = bayes.fit_weights(screen.build_features(prices), prices, horizon=21).weights
+    assert set(wf) == set(full)
+    assert any(not np.isclose(wf[k], full[k], atol=1e-6) for k in wf)
 
 
 def test_momentum_has_edge_vs_reversed():
