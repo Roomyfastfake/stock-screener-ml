@@ -1,8 +1,9 @@
 """Long-only top-N monthly-rebalance backtest. Strictly no lookahead.
 
-At each rebalance date ``r`` the signal is computed from ``prices.loc[:r]``
-(past only) and the resulting top-N equal-weight book earns the close-to-close
-return realized over ``(r, next_r]`` -- i.e. strictly *after* the decision.
+At each signal date ``r`` the signal is computed from ``prices.loc[:r]``
+(past only). The resulting top-N equal-weight book enters on the next available
+close and exits on the next signal's following available close, so signals that
+use date ``r``'s close never assume a fill at that same close.
 
 The baseline here is frictionless; transaction costs, turnover reporting and
 walk-forward weight fitting are layered on in roadmap step 2.
@@ -22,7 +23,7 @@ SignalFn = Callable[[pd.DataFrame], pd.Series]
 class BacktestResult:
     period_returns: pd.Series              # net portfolio return per holding period
     equity_curve: pd.Series                # compounded growth of 1 unit
-    holdings: dict = field(default_factory=dict)   # rebalance date -> list[ticker]
+    holdings: dict = field(default_factory=dict)   # entry date -> list[ticker]
     stats: dict = field(default_factory=dict)
 
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
@@ -77,17 +78,24 @@ def backtest(prices: pd.DataFrame, signal_fn: SignalFn, top_n: int = 10,
     period_index: list[pd.Timestamp] = []
 
     for r, nxt in zip(dates[:-1], dates[1:]):
-        window = prices.loc[:r]                       # past only -> no lookahead
+        r_loc = prices.index.get_loc(r)
+        nxt_loc = prices.index.get_loc(nxt)
+        if r_loc + 1 >= len(prices.index) or nxt_loc + 1 >= len(prices.index):
+            continue
+        entry = prices.index[r_loc + 1]
+        exit_ = prices.index[nxt_loc + 1]
+
+        window = prices.loc[:r]                       # signal known after r close
         scores = signal_fn(window).dropna()
         if scores.empty:
             continue
         picks = list(scores.sort_values(ascending=False).head(top_n).index)
-        holdings[r] = picks
+        holdings[entry] = picks
 
-        held = prices.loc[[r, nxt], picks]
-        fwd = held.iloc[1] / held.iloc[0] - 1.0       # realized after decision
+        held = prices.loc[[entry, exit_], picks]
+        fwd = held.iloc[1] / held.iloc[0] - 1.0       # realized after entry
         period_returns.append(float(fwd.mean()))
-        period_index.append(nxt)
+        period_index.append(exit_)
 
     returns = pd.Series(period_returns, index=pd.DatetimeIndex(period_index), name="return")
     equity = (1.0 + returns).cumprod()

@@ -8,8 +8,8 @@ Examples
     # Rank a live universe (requires yfinance):
     py -3.14 main.py rank --tickers AAPL MSFT NVDA --start 2020-01-01
 
-    # Backtest, optionally with Bayesian (learned) weights:
-    py -3.14 main.py backtest --tickers AAPL MSFT NVDA --start 2018-01-01 --bayes
+    # Backtest with fixed, interpretable weights:
+    py -3.14 main.py backtest --tickers AAPL MSFT NVDA --start 2018-01-01
 """
 from __future__ import annotations
 
@@ -48,6 +48,11 @@ def cmd_rank(args) -> None:
 
 
 def cmd_backtest(args) -> None:
+    if getattr(args, "bayes", False):
+        raise NotImplementedError(
+            "backtest --bayes is disabled until walk-forward fitting is implemented; "
+            "full-sample Bayesian weights would be in-sample/lookahead-biased."
+        )
     prices = _load_prices(args)
     signal_fn = screen.make_signal_fn(weights=_weights(args, prices))
     result = bt.backtest(prices, signal_fn, top_n=args.top_n)
@@ -73,7 +78,11 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--end", default=None)
     common.add_argument("--synthetic", action="store_true", help="force offline synthetic data")
     common.add_argument("--top-n", dest="top_n", type=int, default=10)
-    common.add_argument("--bayes", action="store_true", help="use learned Bayesian weights")
+    common.add_argument(
+        "--bayes",
+        action="store_true",
+        help="use learned Bayesian weights for ranking; disabled for backtests until walk-forward",
+    )
     common.add_argument("--prior-var", dest="prior_var", type=float, default=1.0)
     common.add_argument("--horizon", type=int, default=21)
 
