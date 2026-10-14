@@ -59,10 +59,30 @@ def cmd_backtest(args) -> None:
                                                 horizon=args.horizon)
     else:
         signal_fn = screen.make_signal_fn(weights=_weights(args, prices))
-    result = bt.backtest(prices, signal_fn, top_n=args.top_n)
+    if getattr(args, "engine", "builtin") == "backtester":
+        result = _run_external(args, prices, signal_fn)
+    else:
+        result = bt.backtest(prices, signal_fn, top_n=args.top_n, cost_bps=args.cost_bps)
     print(result)
     for k, v in result.stats.items():
         print(f"  {k:>14}: {v: .4f}")
+
+
+def _run_external(args, prices: pd.DataFrame, signal_fn):
+    """Route through the sibling `backtester` package (pip install -e ../backtester)."""
+    try:
+        import backtester
+    except ImportError as exc:
+        raise SystemExit("--engine backtester needs the package: "
+                         "pip install -e ../backtester") from exc
+    result = backtester.backtest(
+        prices, signal_fn, top_n=args.top_n, short_n=args.short_n,
+        weighting=args.weighting, freq=args.freq, cost_bps=args.cost_bps,
+        slippage_bps=args.slippage_bps, cost_model=args.cost_model)
+    if args.tearsheet:
+        backtester.tearsheet(result, args.tearsheet)
+        print(f"tearsheet written to {args.tearsheet}")
+    return result
 
 
 def cmd_demo(args) -> None:
@@ -89,6 +109,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     common.add_argument("--prior-var", dest="prior_var", type=float, default=1.0)
     common.add_argument("--horizon", type=int, default=21)
+    common.add_argument("--cost-bps", dest="cost_bps", type=float, default=10.0,
+                        help="backtest cost per unit traded, in bps per side (0 = frictionless)")
+    common.add_argument("--engine", choices=["builtin", "backtester"], default="builtin",
+                        help="builtin = screener/backtest.py; backtester = sibling package")
+    # Options below only apply to --engine backtester.
+    common.add_argument("--short-n", dest="short_n", type=int, default=0)
+    common.add_argument("--weighting", choices=["equal", "score", "inverse_vol"], default="equal")
+    common.add_argument("--freq", choices=["D", "W", "M", "Q"], default="M")
+    common.add_argument("--slippage-bps", dest="slippage_bps", type=float, default=0.0)
+    common.add_argument("--cost-model", dest="cost_model", choices=["additive", "nav"],
+                        default="additive", help="additive matches the builtin engine exactly")
+    common.add_argument("--tearsheet", default=None, help="write an HTML tearsheet to this path")
 
     p = argparse.ArgumentParser(description="ML stock screener", parents=[common])
     sub = p.add_subparsers(dest="command", required=True)
