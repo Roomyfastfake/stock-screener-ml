@@ -5,8 +5,11 @@ At each signal date ``r`` the signal is computed from ``prices.loc[:r]``
 close and exits on the next signal's following available close, so signals that
 use date ``r``'s close never assume a fill at that same close.
 
-The baseline here is frictionless; transaction costs, turnover reporting and
-walk-forward weight fitting are layered on in roadmap step 2.
+Costs: at each rebalance the book's drifted weights are traded to the new
+equal-weight targets. Traded notional is ``sum |w_target - w_drifted|`` and is
+charged ``cost_bps`` (per unit traded, i.e. per side) against that period's
+return. Turnover is reported one-way, ``0.5 * traded``; the first period
+buys the full book (turnover 0.5, traded 1.0).
 """
 from __future__ import annotations
 
@@ -25,6 +28,8 @@ class BacktestResult:
     equity_curve: pd.Series                # compounded growth of 1 unit
     holdings: dict = field(default_factory=dict)   # entry date -> list[ticker]
     stats: dict = field(default_factory=dict)
+    turnover: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))  # one-way, per period
+    gross_returns: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
 
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
         s = self.stats
@@ -56,7 +61,7 @@ def _summary_stats(returns: pd.Series, periods_per_year: int = 12) -> dict:
 
 
 def backtest(prices: pd.DataFrame, signal_fn: SignalFn, top_n: int = 10,
-             min_history: int = 126) -> BacktestResult:
+             min_history: int = 126, cost_bps: float = 0.0) -> BacktestResult:
     """Run the long-only top-N monthly backtest.
 
     Parameters
@@ -66,7 +71,10 @@ def backtest(prices: pd.DataFrame, signal_fn: SignalFn, top_n: int = 10,
         is more attractive. NaN scores are ineligible.
     top_n : number of equally weighted names held each period.
     min_history : rows required before the first rebalance (factor warm-up).
+    cost_bps : cost per unit of notional traded, in basis points (per side).
     """
+    if cost_bps < 0:
+        raise ValueError("cost_bps must be non-negative")
     if not isinstance(prices.index, pd.DatetimeIndex):
         raise TypeError("prices must be indexed by a DatetimeIndex")
     prices = prices.sort_index()
@@ -75,7 +83,11 @@ def backtest(prices: pd.DataFrame, signal_fn: SignalFn, top_n: int = 10,
 
     holdings: dict = {}
     period_returns: list[float] = []
+    gross_returns: list[float] = []
+    turnovers: list[float] = []
     period_index: list[pd.Timestamp] = []
+    drifted = pd.Series(dtype=float)               # weights at end of last period
+    cost_rate = cost_bps / 1e4
 
     for r, nxt in zip(dates[:-1], dates[1:]):
         r_loc = prices.index.get_loc(r)
@@ -94,10 +106,28 @@ def backtest(prices: pd.DataFrame, signal_fn: SignalFn, top_n: int = 10,
 
         held = prices.loc[[entry, exit_], picks]
         fwd = held.iloc[1] / held.iloc[0] - 1.0       # realized after entry
-        period_returns.append(float(fwd.mean()))
+
+        target = pd.Series(1.0 / len(picks), index=picks)
+        traded = float(target.sub(drifted, fill_value=0.0).abs().sum())
+        gross = float(fwd.mean())                     # equal weight; NaN legs skipped
+        net = gross - traded * cost_rate
+
+        grown = target * (1.0 + fwd.fillna(0.0))
+        drifted = grown / grown.sum()
+
+        gross_returns.append(gross)
+        period_returns.append(net)
+        turnovers.append(0.5 * traded)
         period_index.append(exit_)
 
-    returns = pd.Series(period_returns, index=pd.DatetimeIndex(period_index), name="return")
+    idx = pd.DatetimeIndex(period_index)
+    returns = pd.Series(period_returns, index=idx, name="return")
+    gross_s = pd.Series(gross_returns, index=idx, name="gross_return")
+    turnover = pd.Series(turnovers, index=idx, name="turnover")
     equity = (1.0 + returns).cumprod()
     equity.name = "equity"
-    return BacktestResult(returns, equity, holdings, _summary_stats(returns))
+    stats = _summary_stats(returns)
+    stats["avg_turnover"] = float(turnover.mean()) if len(turnover) else np.nan
+    stats["cost_drag_ann"] = (float((gross_s - returns).mean() * 12)
+                              if len(returns) else np.nan)
+    return BacktestResult(returns, equity, holdings, stats, turnover, gross_s)

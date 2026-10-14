@@ -59,7 +59,7 @@ def cmd_backtest(args) -> None:
                                                 horizon=args.horizon)
     else:
         signal_fn = screen.make_signal_fn(weights=_weights(args, prices))
-    result = bt.backtest(prices, signal_fn, top_n=args.top_n)
+    result = bt.backtest(prices, signal_fn, top_n=args.top_n, cost_bps=args.cost_bps)
     print(result)
     for k, v in result.stats.items():
         print(f"  {k:>14}: {v: .4f}")
@@ -89,6 +89,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     common.add_argument("--prior-var", dest="prior_var", type=float, default=1.0)
     common.add_argument("--horizon", type=int, default=21)
+    common.add_argument("--cost-bps", dest="cost_bps", type=float, default=10.0,
+                        help="backtest cost per unit traded, in bps per side (0 = frictionless)")
 
     p = argparse.ArgumentParser(description="ML stock screener", parents=[common])
     sub = p.add_subparsers(dest="command", required=True)

@@ -153,6 +153,39 @@ def test_backtest_enters_next_close_after_signal():
     assert np.isclose(res.period_returns.iloc[0], 1.0)  # 20 / 10 - 1
 
 
+def test_backtest_costs_and_turnover():
+    """Hand-checked: A held, then rotate fully A -> B; costs hit traded notional."""
+    idx = pd.to_datetime(["2020-01-30", "2020-01-31", "2020-02-03",
+                          "2020-02-28", "2020-03-02", "2020-03-31", "2020-04-01"])
+    prices = pd.DataFrame({"A": [100.0, 100.0, 100.0, 100.0, 110.0, 110.0, 110.0],
+                           "B": [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 120.0]},
+                          index=idx)
+    picks = iter(["A", "B"])
+
+    def signal_fn(window: pd.DataFrame) -> pd.Series:
+        best = next(picks)
+        return pd.Series({c: float(c == best) for c in window.columns})
+
+    free = bt.backtest(prices, signal_fn, top_n=1, min_history=1)
+    picks = iter(["A", "B"])
+    paid = bt.backtest(prices, signal_fn, top_n=1, min_history=1, cost_bps=50)
+
+    assert np.allclose(free.period_returns, [0.10, 0.20])
+    assert np.allclose(paid.turnover, [0.5, 1.0])          # buy book, then full rotation
+    # traded notional 1.0 then 2.0, at 50 bps per unit
+    assert np.allclose(paid.period_returns, [0.10 - 0.005, 0.20 - 0.010])
+    assert np.allclose(paid.gross_returns, free.period_returns)
+    assert np.isclose(paid.stats["avg_turnover"], 0.75)
+
+
+def test_backtest_costs_reduce_return_monotonically():
+    prices = synthetic.make_prices(n_tickers=20, n_days=900, seed=0)
+    sfn = screen.make_signal_fn()
+    totals = [bt.backtest(prices, sfn, top_n=5, cost_bps=c).stats["total_return"]
+              for c in (0, 10, 50)]
+    assert totals[0] > totals[1] > totals[2]
+
+
 def test_backtest_bayes_runs_walk_forward():
     """`backtest --bayes` is re-enabled now that it uses the walk-forward path."""
     args = cli.build_parser().parse_args(["backtest", "--synthetic", "--bayes"])

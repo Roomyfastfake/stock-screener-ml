@@ -9,10 +9,9 @@ The goal of this project is not to claim a profitable trading strategy. The goal
 * Pure pandas/numpy technical indicators
 * Cross-sectional winsorized z-score factors
 * Weighted composite scoring
-* Long-only top-N monthly rebalance backtest
-* Bayesian/ridge-style factor-weight estimation
+* Long-only top-N monthly rebalance backtest with transaction costs and turnover reporting
+* Bayesian/ridge-style factor-weight estimation, refit walk-forward in backtests
 * Offline synthetic tests
-* Explicit protections against misleading Bayesian backtests before walk-forward training exists
 
 ## Project Structure
 
@@ -42,12 +41,11 @@ Implemented:
 * Basic long-only backtest
 * Next-close entry timing
 * Tests for lookahead-sensitive behavior
-* Bayesian backtest disabled until walk-forward training is implemented
+* Walk-forward Bayesian backtest (weights refit each rebalance on past data only)
+* Transaction costs (`--cost-bps`, default 10 bps per side) and one-way turnover reporting
 
 Not yet implemented:
 
-* Walk-forward Bayesian training
-* Transaction costs and turnover
 * Fundamentals
 * S&P 500 universe loading
 * Local parquet caching
@@ -56,7 +54,7 @@ Not yet implemented:
 
 The baseline screener uses hard-coded factor weights. The Bayesian layer estimates factor weights from historical factor values and next-period returns using a simple ridge/Bayesian linear regression approach.
 
-This lets weak or noisy factors shrink toward zero instead of being assigned arbitrary fixed weights. The current Bayesian module is for research and scoring only. It is not used for performance claims in backtests until walk-forward training is added.
+This lets weak or noisy factors shrink toward zero instead of being assigned arbitrary fixed weights. The current Bayesian module is for research and scoring only. In backtests it is only used walk-forward: weights are refit at every rebalance on data up to that date.
 
 ## Avoiding Lookahead Bias
 
@@ -65,7 +63,15 @@ This project includes tests and design choices to reduce lookahead risk:
 * Indicators are built from trailing price data.
 * Ranking at an as-of date ignores future rows.
 * Signals formed at date `t` enter on the next available close.
-* `backtest --bayes` is disabled until walk-forward fitting is implemented.
+* `backtest --bayes` refits weights walk-forward; tests poison future rows and check the signal does not move.
+
+## Usage
+
+```powershell
+py -3.14 main.py demo                                   # offline synthetic demo
+py -3.14 main.py backtest --synthetic --bayes --cost-bps 10
+py -3.14 main.py backtest --tickers AAPL MSFT NVDA --start 2018-01-01
+```
 
 ## Running Tests
 
@@ -77,27 +83,25 @@ py -3.14 tests\test_screener.py
 Expected result:
 
 ```text
-18/18 passed
+22/22 passed
 ```
 
 ## Roadmap
 
 ### Step 1: Bayesian scoring layer
 
-Status: Mostly complete.
+Status: Complete.
 
-* Add Bayesian/ridge-style factor weighting
-* Add synthetic tests for sign recovery
-* Disable in-sample Bayesian backtesting until walk-forward training exists
+* Bayesian/ridge-style factor weighting
+* Synthetic tests for sign recovery and shrinkage
 
 ### Step 2: Backtest realism
 
-Planned:
+Status: Complete.
 
-* Add transaction costs
-* Report turnover
-* Add walk-forward factor fitting
-* Evaluate out of sample only
+* Transaction costs charged on traded notional (drifted weights to new targets)
+* One-way turnover and annualized cost drag in backtest stats
+* Walk-forward factor fitting, out-of-sample evaluation only
 
 ### Step 3: Fundamentals
 
