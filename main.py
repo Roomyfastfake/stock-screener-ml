@@ -13,6 +13,10 @@ Examples
 
     # Backtest with walk-forward Bayesian weights (refit each rebalance, no lookahead):
     py -3.14 main.py backtest --synthetic --bayes
+
+    # S&P 500 with the local price cache (first run downloads, reruns are offline):
+    py -3.14 main.py fetch --universe sp500 --start 2015-01-01
+    py -3.14 main.py backtest --universe sp500 --start 2015-01-01 --offline
 """
 from __future__ import annotations
 
@@ -22,15 +26,33 @@ import pandas as pd
 
 from screener import backtest as bt
 from screener import bayes
+from screener import cache
 from screener import screen
 from screener import synthetic
+from screener import universe
+
+
+def _tickers(args) -> list[str]:
+    if getattr(args, "universe", None):
+        return universe.resolve(args.universe, sector=args.sector)
+    return [universe.to_yahoo(t) for t in (getattr(args, "tickers", None) or [])]
 
 
 def _load_prices(args) -> pd.DataFrame:
-    if getattr(args, "synthetic", False) or not getattr(args, "tickers", None):
+    tickers = _tickers(args)
+    if getattr(args, "synthetic", False) or not tickers:
         return synthetic.make_prices(n_tickers=20, n_days=900, seed=0)
-    from screener import data  # lazy: only import (and need yfinance) on demand
-    return data.download_prices(args.tickers, start=args.start, end=args.end)
+    if args.no_cache:
+        from screener import data  # lazy: only import (and need yfinance) on demand
+        return data.download_prices(tickers, start=args.start, end=args.end)
+    pc = cache.PriceCache(args.cache_dir, max_age_days=args.max_age_days)
+    prices = pc.get(tickers, start=args.start, end=args.end,
+                    offline=args.offline, refresh=args.refresh)
+    if pc.last_missing:
+        print(f"no data for {len(pc.last_missing)} tickers: {pc.last_missing[:10]}")
+    print(f"prices: {prices.shape[1]} tickers x {prices.shape[0]} days "
+          f"({prices.index[0].date()} to {prices.index[-1].date()})")
+    return prices
 
 
 def _weights(args, prices: pd.DataFrame) -> dict[str, float]:
@@ -75,14 +97,30 @@ def _run_external(args, prices: pd.DataFrame, signal_fn):
     except ImportError as exc:
         raise SystemExit("--engine backtester needs the package: "
                          "pip install -e ../backtester") from exc
+    bench = None
+    if args.benchmark:
+        pc = cache.PriceCache(args.cache_dir, max_age_days=args.max_age_days)
+        bench = pc.get([args.benchmark], start=args.start, end=args.end,
+                       offline=args.offline)[args.benchmark]
     result = backtester.backtest(
         prices, signal_fn, top_n=args.top_n, short_n=args.short_n,
         weighting=args.weighting, freq=args.freq, cost_bps=args.cost_bps,
-        slippage_bps=args.slippage_bps, cost_model=args.cost_model)
+        slippage_bps=args.slippage_bps, cost_model=args.cost_model, benchmark=bench)
     if args.tearsheet:
         backtester.tearsheet(result, args.tearsheet)
         print(f"tearsheet written to {args.tearsheet}")
     return result
+
+
+def cmd_fetch(args) -> None:
+    if not _tickers(args):
+        raise SystemExit("fetch needs --universe or --tickers")
+    _load_prices(args)
+
+
+def cmd_refresh_universe(args) -> None:
+    df = universe.refresh_sp500()
+    print(f"wrote {len(df)} constituents to {universe.SP500_CSV}")
 
 
 def cmd_demo(args) -> None:
@@ -97,7 +135,17 @@ def build_parser() -> argparse.ArgumentParser:
     # Shared options live on a parent parser so they may appear *after* the
     # subcommand (e.g. `main.py backtest --bayes --top-n 5`).
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--tickers", nargs="*", help="universe; omit for synthetic data")
+    common.add_argument("--tickers", nargs="*", help="explicit tickers; omit (and --universe) for synthetic data")
+    common.add_argument("--universe", default=None,
+                        help="'sp500' (bundled snapshot) or a CSV path with a 'ticker' column")
+    common.add_argument("--sector", default=None, help="filter --universe by GICS sector")
+    common.add_argument("--cache-dir", dest="cache_dir", default=str(cache.DEFAULT_DIR))
+    common.add_argument("--max-age-days", dest="max_age_days", type=float, default=1.0,
+                        help="re-download open-ended (no --end) histories older than this")
+    common.add_argument("--offline", action="store_true", help="cache only, never download")
+    common.add_argument("--refresh", action="store_true", help="re-download every ticker")
+    common.add_argument("--no-cache", dest="no_cache", action="store_true",
+                        help="download directly, bypassing the cache")
     common.add_argument("--start", default="2018-01-01")
     common.add_argument("--end", default=None)
     common.add_argument("--synthetic", action="store_true", help="force offline synthetic data")
@@ -121,12 +169,18 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--cost-model", dest="cost_model", choices=["additive", "nav"],
                         default="additive", help="additive matches the builtin engine exactly")
     common.add_argument("--tearsheet", default=None, help="write an HTML tearsheet to this path")
+    common.add_argument("--benchmark", default=None,
+                        help="benchmark ticker for relative stats, e.g. SPY (cached like prices)")
 
     p = argparse.ArgumentParser(description="ML stock screener", parents=[common])
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("rank", parents=[common]).set_defaults(func=cmd_rank)
     sub.add_parser("backtest", parents=[common]).set_defaults(func=cmd_backtest)
     sub.add_parser("demo", parents=[common]).set_defaults(func=cmd_demo)
+    sub.add_parser("fetch", parents=[common],
+                   help="warm the price cache for --universe/--tickers").set_defaults(func=cmd_fetch)
+    sub.add_parser("refresh-universe",
+                   help="rebuild data/sp500.csv from Wikipedia").set_defaults(func=cmd_refresh_universe)
     return p
 
 

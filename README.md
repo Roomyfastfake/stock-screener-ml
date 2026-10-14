@@ -43,12 +43,24 @@ Implemented:
 * Tests for lookahead-sensitive behavior
 * Walk-forward Bayesian backtest (weights refit each rebalance on past data only)
 * Transaction costs (`--cost-bps`, default 10 bps per side) and one-way turnover reporting
+* S&P 500 universe (`--universe sp500`, bundled `data/sp500.csv` snapshot) and local parquet price cache
+* Optional `--engine backtester` route to the sibling [backtester](../backtester) package (long-short, weighting schemes, benchmark stats, HTML tearsheet)
 
 Not yet implemented:
 
 * Fundamentals
-* S&P 500 universe loading
-* Local parquet caching
+* Point-in-time index membership (see survivorship bias below)
+
+## First Real-Data Run (2026-10-14)
+
+S&P 500, 2015-01-02 to 2026-10-13, fixed default weights, top 25 equal weight, monthly, 10 bps per side:
+
+| Engine | CAGR | Sharpe | Max DD | Beta vs SPY | Alpha (ann.) | Info ratio |
+|---|---|---|---|---|---|---|
+| builtin (monthly stats) | 20.9% | 1.00 | -31% | n/a | n/a | n/a |
+| backtester (daily stats, NAV costs) | 18.5% | 0.90 | -42% | 0.95 | 5.1% | 0.33 |
+
+**Treat these as optimistic.** The universe is *today's* S&P 500 members, so every stock that was dropped from the index after doing badly is missing from the history (survivorship bias). The daily drawdown is deeper than the monthly one because monthly stats only see month-end marks.
 
 ## Why Bayesian Scoring?
 
@@ -71,7 +83,21 @@ This project includes tests and design choices to reduce lookahead risk:
 py -3.14 main.py demo                                   # offline synthetic demo
 py -3.14 main.py backtest --synthetic --bayes --cost-bps 10
 py -3.14 main.py backtest --tickers AAPL MSFT NVDA --start 2018-01-01
+
+# S&P 500 with the local cache (data/cache, git-ignored)
+py -3.14 main.py fetch --universe sp500 --start 2015-01-01          # ~40s first time, ~3s after
+py -3.14 main.py backtest --universe sp500 --start 2015-01-01 --offline --top-n 25
+py -3.14 main.py backtest --universe sp500 --sector Energy --offline  # GICS sector filter
+
+# Through the backtester package, with benchmark stats and a tearsheet
+py -3.14 -m pip install -e ..\backtester
+py -3.14 main.py backtest --universe sp500 --start 2015-01-01 --top-n 25 `
+    --engine backtester --cost-model nav --benchmark SPY --tearsheet reports\sp500.html
+
+py -3.14 main.py refresh-universe                                     # rebuild data/sp500.csv
 ```
+
+Cache rules: a ticker is re-downloaded (full history, never appended, because adjusted closes are restated after splits and dividends) when it is missing, was fetched from a later start, or is older than `--max-age-days` for open-ended requests. Today's bar is dropped until 16:30 New York time so an intraday price is never treated as a close. `--offline` never touches the network.
 
 ## Running Tests
 
@@ -83,7 +109,7 @@ py -3.14 tests\test_screener.py
 Expected result:
 
 ```text
-22/22 passed
+33/33 passed
 ```
 
 ## Roadmap
@@ -113,11 +139,13 @@ Planned:
 
 ### Step 4: Universe and caching
 
-Planned:
+Status: Complete.
 
-* Load S&P 500 tickers from a local CSV
-* Cache downloaded prices locally
-* Keep reruns offline where possible
+* S&P 500 tickers from a local CSV snapshot, with sector filter and Wikipedia refresh
+* Per-ticker parquet cache with manifest, staleness rules and one retry for transient failures
+* Reruns fully offline with `--offline`
+
+Next: point-in-time membership to remove survivorship bias; faster incremental feature computation (each rebalance currently rebuilds features on the full window, so a 12-year S&P 500 run takes several minutes).
 
 ## Disclaimer
 

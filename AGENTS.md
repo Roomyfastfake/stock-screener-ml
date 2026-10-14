@@ -15,8 +15,13 @@ GitHub: Roomyfastfake/stock-screener-ml. See README.md for usage and roadmap.
 - Roadmap steps 1 (Bayesian scoring) and 2 (backtest realism: costs, turnover,
   walk-forward) done. Branch `feat/costs-turnover` adds costs; CLI default
   `--cost-bps 10`, library default 0.
-- Next: step 4 (S&P 500 CSV universe + local parquet cache, first real-data run),
-  then step 3 (fundamentals).
+- Step 4 done on branch `feat/universe-cache` (2026-10-15): `screener/universe.py`
+  (data/sp500.csv snapshot, 503 names), `screener/cache.py` (parquet per ticker +
+  manifest.json in git-ignored data/cache; full re-download on miss, never splice;
+  drops today's bar before 16:30 ET). First real run documented in README.
+- Known limits: survivorship bias (current members only); signal rebuilds features
+  on the full window each rebalance (slow, O(n^2)), so an S&P run takes minutes.
+- Next: step 3 (fundamentals), speed up features, point-in-time membership.
 - Sibling repo `backtester` (C:\Users\TANUSH\projects\backtester, a sibling folder) is a
   standalone backtesting engine. See Integration plan.
 

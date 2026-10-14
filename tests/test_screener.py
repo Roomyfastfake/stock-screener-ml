@@ -6,7 +6,9 @@ Plain asserts + a tiny runner so there is no pytest dependency.
 """
 from __future__ import annotations
 
+import pathlib
 import sys
+import tempfile
 import traceback
 
 import numpy as np
@@ -15,10 +17,12 @@ import pandas as pd
 import main as cli
 from screener import backtest as bt
 from screener import bayes
+from screener import cache
 from screener import indicators as ind
 from screener import score as sc
 from screener import screen
 from screener import synthetic
+from screener import universe
 
 
 # --------------------------------------------------------------------------- #
@@ -301,6 +305,132 @@ def test_bayes_scorer_is_dropin():
 def _factor_subset(n_days: int, seed: int):
     prices, exposure = synthetic.make_factor_panel(n_days=n_days, true_beta=0.03, seed=seed)
     return {"exp": sc.zscore_factor(exposure)}, prices
+
+
+# --------------------------------------------------------------------------- #
+# universe + cache (step 4)
+# --------------------------------------------------------------------------- #
+def test_universe_csv_normalises_and_filters():
+    with tempfile.TemporaryDirectory() as d:
+        path = pathlib.Path(d) / "u.csv"
+        path.write_text("# snapshot\nticker,name,sector\nbrk.b,Berkshire,Financials\n"
+                        "AAPL,Apple,Information Technology\nAAPL,dup,Information Technology\n"
+                        "JPM,JPMorgan,Financials\n", "utf-8")
+        assert universe.load_universe(path) == ["BRK-B", "AAPL", "JPM"]
+        assert universe.load_universe(path, sector="financials") == ["BRK-B", "JPM"]
+
+
+def test_bundled_sp500_snapshot():
+    tickers = universe.load_sp500()
+    assert 490 <= len(tickers) <= 510
+    assert {"AAPL", "MSFT", "BRK-B"} <= set(tickers)
+    assert all("." not in t for t in tickers)
+
+
+class _FakeDownloader:
+    """Deterministic stand-in for yfinance; records every call."""
+
+    def __init__(self, known, scale=1.0):
+        self.known, self.scale, self.calls = set(known), scale, []
+        self.index = pd.bdate_range("2019-01-01", "2020-12-31")
+
+    def __call__(self, tickers, start, end):
+        self.calls.append(list(tickers))
+        idx = self.index[self.index >= pd.Timestamp(start)]
+        cols = {t: pd.Series(self.scale * (100 + np.arange(len(idx)) + i), index=idx)
+                for i, t in enumerate(sorted(self.known)) if t in tickers}
+        return pd.DataFrame(cols)
+
+
+def test_cache_hit_avoids_download_and_matches():
+    with tempfile.TemporaryDirectory() as d:
+        fake = _FakeDownloader(["A", "B"])
+        first = cache.PriceCache(d, downloader=fake).get(["A", "B"], "2019-06-01", "2020-06-30")
+        again = cache.PriceCache(d, downloader=fake).get(["A", "B"], "2019-06-01", "2020-06-30")
+        assert len(fake.calls) == 1
+        pd.testing.assert_frame_equal(first, again, check_freq=False)
+        assert first.index[0] >= pd.Timestamp("2019-06-01")
+        assert first.index[-1] <= pd.Timestamp("2020-06-30")
+
+
+def test_cache_offline_miss_raises_and_hit_works():
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            cache.PriceCache(d).get(["A"], "2019-06-01", offline=True)
+            raise AssertionError("expected CacheMiss")
+        except cache.CacheMiss:
+            pass
+        cache.PriceCache(d, downloader=_FakeDownloader(["A"])).get(["A"], "2019-06-01")
+        out = cache.PriceCache(d).get(["A"], "2019-06-01", offline=True)
+        assert list(out.columns) == ["A"] and len(out) > 100
+
+
+def test_cache_staleness_rules():
+    with tempfile.TemporaryDirectory() as d:
+        fake = _FakeDownloader(["A"])
+        pc = cache.PriceCache(d, downloader=fake)
+        pc.get(["A"], "2019-06-01")
+        pc.manifest["A"]["fetched_at"] = "2020-07-01T00:00:00"    # pretend: old fetch
+        pc.get(["A"], "2019-06-01", end="2020-06-30")              # end before fetch: still final
+        assert len(fake.calls) == 1
+        pc.get(["A"], "2019-06-01")                                # open-ended + old: refetch
+        assert len(fake.calls) == 2
+        pc.get(["A"], "2019-01-01")                                # earlier start: refetch
+        assert len(fake.calls) == 3
+        pc.get(["A"], "2019-06-01", refresh=True)
+        assert len(fake.calls) == 4
+
+
+def test_cache_refetch_replaces_restated_history():
+    """Adjusted closes get restated; a refetch must overwrite, never splice."""
+    with tempfile.TemporaryDirectory() as d:
+        cache.PriceCache(d, downloader=_FakeDownloader(["A"], scale=1.0)).get(["A"], "2019-06-01")
+        restated = cache.PriceCache(d, downloader=_FakeDownloader(["A"], scale=0.5))
+        out = restated.get(["A"], "2019-06-01", refresh=True)
+        expected = _FakeDownloader(["A"], scale=0.5)(["A"], "2019-06-01", None)
+        assert np.allclose(out["A"].to_numpy(), expected["A"].to_numpy())
+
+
+def test_cache_drops_unknown_tickers():
+    with tempfile.TemporaryDirectory() as d:
+        pc = cache.PriceCache(d, downloader=_FakeDownloader(["A"]))
+        out = pc.get(["A", "ZZZZ"], "2019-06-01")
+        assert list(out.columns) == ["A"]
+        assert pc.last_missing == ["ZZZZ"]
+
+
+def test_last_complete_session_excludes_intraday_bar():
+    et = "America/New_York"
+    assert cache.last_complete_session(pd.Timestamp("2026-10-14 14:00", tz=et)) == pd.Timestamp("2026-10-13")
+    assert cache.last_complete_session(pd.Timestamp("2026-10-14 17:00", tz=et)) == pd.Timestamp("2026-10-14")
+
+
+def test_cache_retries_transient_failures_once():
+    with tempfile.TemporaryDirectory() as d:
+        inner = _FakeDownloader(["A", "B"])
+
+        def flaky(tickers, start, end):               # B fails on the first attempt only
+            out = inner(tickers, start, end)
+            return out.drop(columns="B") if len(inner.calls) == 1 else out
+
+        pc = cache.PriceCache(d, downloader=flaky)
+        out = pc.get(["A", "B"], "2019-06-01")
+        assert list(out.columns) == ["A", "B"]
+        assert inner.calls == [["A", "B"], ["B"]]
+
+
+def test_cli_uses_cache_offline():
+    with tempfile.TemporaryDirectory() as d:
+        prices = synthetic.make_prices(n_tickers=12, n_days=500, seed=0)
+
+        def fake(tickers, start, end):
+            return prices[[t for t in tickers if t in prices.columns]]
+
+        cache.PriceCache(d, downloader=fake).get(list(prices.columns), "2000-01-01")
+        args = cli.build_parser().parse_args(
+            ["backtest", "--tickers", *prices.columns, "--start", "2000-01-01",
+             "--offline", "--cache-dir", d, "--top-n", "3"])
+        cli.cmd_backtest(args)                     # offline: must not hit the network
 
 
 # --------------------------------------------------------------------------- #

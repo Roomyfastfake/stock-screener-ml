@@ -2,3 +2,5 @@
 pandas
 yfinance
 scipy
+pyarrow
+lxml
