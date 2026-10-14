@@ -186,6 +186,24 @@ def test_backtest_costs_reduce_return_monotonically():
     assert totals[0] > totals[1] > totals[2]
 
 
+def test_external_engine_parity():
+    """`backtester` (additive costs) reproduces the builtin engine period by period."""
+    try:
+        import backtester
+    except ImportError:
+        print("  (skipped: backtester package not installed)")
+        return
+    prices = synthetic.make_prices(n_tickers=20, n_days=900, seed=0)
+    sfn = screen.make_signal_fn()
+    ours = bt.backtest(prices, sfn, top_n=5, cost_bps=25)
+    theirs = backtester.backtest(prices, sfn, top_n=5, cost_bps=25, cost_model="additive")
+    common = ours.period_returns.index            # external engine adds a tail period
+    pd.testing.assert_series_equal(ours.period_returns,
+                                   theirs.period_returns.loc[common],
+                                   check_names=False, rtol=0, atol=1e-12)
+    assert ours.holdings == {d: theirs.holdings[d] for d in ours.holdings}
+
+
 def test_backtest_bayes_runs_walk_forward():
     """`backtest --bayes` is re-enabled now that it uses the walk-forward path."""
     args = cli.build_parser().parse_args(["backtest", "--synthetic", "--bayes"])
