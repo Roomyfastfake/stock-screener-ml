@@ -363,6 +363,11 @@ def test_cache_offline_miss_raises_and_hit_works():
         cache.PriceCache(d, downloader=_FakeDownloader(["A"])).get(["A"], "2019-06-01")
         out = cache.PriceCache(d).get(["A"], "2019-06-01", offline=True)
         assert list(out.columns) == ["A"] and len(out) > 100
+        try:                                           # cached from June: earlier start is a miss
+            cache.PriceCache(d).get(["A"], "2019-01-01", offline=True)
+            raise AssertionError("expected CacheMiss for uncovered start")
+        except cache.CacheMiss:
+            pass
 
 
 def test_cache_staleness_rules():
@@ -371,14 +376,21 @@ def test_cache_staleness_rules():
         pc = cache.PriceCache(d, downloader=fake)
         pc.get(["A"], "2019-06-01")
         pc.manifest["A"]["fetched_at"] = "2020-07-01T00:00:00"    # pretend: old fetch
-        pc.get(["A"], "2019-06-01", end="2020-06-30")              # end before fetch: still final
+        pc.manifest["A"]["complete_through"] = "2020-06-30"
+        pc.get(["A"], "2019-06-01", end="2020-06-30")              # closes final through end
         assert len(fake.calls) == 1
-        pc.get(["A"], "2019-06-01")                                # open-ended + old: refetch
+        # Fetched during market hours on the end date: that close was not final yet.
+        pc.manifest["A"]["complete_through"] = "2020-06-29"
+        pc.get(["A"], "2019-06-01", end="2020-06-30")
         assert len(fake.calls) == 2
-        pc.get(["A"], "2019-01-01")                                # earlier start: refetch
+        pc.manifest["A"]["fetched_at"] = "2020-07-01T00:00:00"
+        pc.manifest["A"]["complete_through"] = "2020-06-30"
+        pc.get(["A"], "2019-06-01")                                # open-ended + old: refetch
         assert len(fake.calls) == 3
-        pc.get(["A"], "2019-06-01", refresh=True)
+        pc.get(["A"], "2019-01-01")                                # earlier start: refetch
         assert len(fake.calls) == 4
+        pc.get(["A"], "2019-06-01", refresh=True)
+        assert len(fake.calls) == 5
 
 
 def test_cache_refetch_replaces_restated_history():

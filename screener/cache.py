@@ -6,8 +6,9 @@ Layout under ``cache_dir`` (default ``data/cache``, git-ignored)::
     manifest.json             ticker -> {fetched_at, start, first, last}
 
 A ticker is a hit when it was fetched from a ``start`` at or before the request
-and is fresh enough: either fetched after the requested ``end``, or (open-ended
-requests) fetched within ``max_age_days``. A miss re-downloads the ticker's
+and is fresh enough: either its last *complete* session at fetch time (New York
+close, see ``last_complete_session``) is on or after the requested ``end``, or
+(open-ended requests) it was fetched within ``max_age_days``. A miss re-downloads the ticker's
 *whole* history instead of appending, because adjusted closes are restated on
 every split/dividend; splicing old and new downloads would mix adjustment bases.
 
@@ -58,10 +59,12 @@ class PriceCache:
         s.index = pd.DatetimeIndex(s.index)
         return s
 
-    def _write(self, ticker: str, series: pd.Series, start: str) -> None:
+    def _write(self, ticker: str, series: pd.Series, start: str,
+               cutoff: pd.Timestamp) -> None:
         self.prices_dir.mkdir(parents=True, exist_ok=True)
         series.rename(ticker).to_frame().to_parquet(self._path(ticker))
         self.manifest[ticker] = {"fetched_at": _now().isoformat(timespec="seconds"),
+                                 "complete_through": str(cutoff.date()),
                                  "start": str(pd.Timestamp(start).date()),
                                  "first": str(series.index[0].date()),
                                  "last": str(series.index[-1].date())}
@@ -79,10 +82,10 @@ class PriceCache:
             return False
         if pd.Timestamp(meta["start"]) > pd.Timestamp(start):
             return False
-        fetched = pd.Timestamp(meta["fetched_at"])
-        if end is not None and fetched > pd.Timestamp(end):
-            return True                      # history up to `end` was final when fetched
-        return _now() - fetched <= self.max_age
+        if end is not None and "complete_through" in meta and \
+                pd.Timestamp(meta["complete_through"]) >= pd.Timestamp(end).normalize():
+            return True                      # every close up to `end` was final when fetched
+        return _now() - pd.Timestamp(meta["fetched_at"]) <= self.max_age
 
     # ---------------------------------------------------------------- main
     def get(self, tickers: list[str], start: str, end: str | None = None,
@@ -94,9 +97,10 @@ class PriceCache:
         """
         tickers = list(dict.fromkeys(tickers))
         if offline:
-            stale = [t for t in tickers if t not in self.manifest or not self._path(t).exists()]
+            stale = [t for t in tickers if t not in self.manifest or not self._path(t).exists()
+                     or pd.Timestamp(self.manifest[t]["start"]) > pd.Timestamp(start)]
             if stale:
-                raise CacheMiss(f"{len(stale)} tickers not cached, e.g. {stale[:5]}")
+                raise CacheMiss(f"{len(stale)} tickers not cached from {start}, e.g. {stale[:5]}")
         else:
             todo = tickers if refresh else [t for t in tickers if not self.is_fresh(t, start, end)]
             self._fetch(todo, start, end)
@@ -133,7 +137,7 @@ class PriceCache:
             if s.empty:
                 failed.append(t)
             else:
-                self._write(t, s, start)
+                self._write(t, s, start, cutoff)
         return failed
 
 
