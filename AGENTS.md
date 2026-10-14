@@ -27,7 +27,9 @@ Standalone backtesting engine, spun off from the sibling project
   Sharpe CI, probabilistic and deflated Sharpe.
 - `backtester/report.py`: `tearsheet(result, path)` self-contained HTML.
 - `backtester/synthetic.py`: deterministic prices + a momentum `signal_fn`.
-- Tests: `py -3 tests/test_backtester.py` (tiny runner, no pytest).
+- Tests: `py -3 tests/test_backtester.py` (tiny runner, no pytest; reports
+  passed/skipped/failed). Set `SCREENER_PATH` to the stock-screener-ml folder if
+  it is not a sibling, otherwise the live parity test is SKIPPED.
 - Demo: `py -3 examples/demo.py out.html`.
 
 ## Decisions
@@ -41,6 +43,7 @@ Standalone backtesting engine, spun off from the sibling project
   annualized monthly periods with 12, which breaks for D/W and hides intra-month DD).
 - **Gross convention**: long leg sums to +1; short leg (`short_n > 0`) to -1, picked
   from the bottom scores not already long. Long-short = gross 2, net 0, cash at 0%.
+  If too few eligible names remain for the short leg, the book is long-only that period.
 - **Score weighting**: positive part of the leg-oriented score (short leg uses
   `-score`); equal weight if none positive. **Inverse-vol**: 1/stdev of last 63
   daily returns from the signal window only.
@@ -68,5 +71,5 @@ Standalone backtesting engine, spun off from the sibling project
 - No performance claims from in-sample fits.
 
 ## Status
-v0.1: engine, research metrics, tearsheet, 28 tests passing (Python 3.14,
+v0.1: engine, research metrics, tearsheet, 29 tests passing (Python 3.14,
 pandas 3.0, numpy 2.4). Not pushed; no GitHub repo yet.

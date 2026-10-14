@@ -21,6 +21,10 @@ from backtester import research as rs
 from backtester import synthetic, weights
 
 
+class Skip(Exception):
+    """Raised by a test whose external precondition is missing."""
+
+
 def _const(best: str, cols=("A", "B")):
     return lambda window: pd.Series({c: float(c == best) for c in window.columns})
 
@@ -130,8 +134,7 @@ def test_parity_with_live_screener_code():
     """If stock-screener-ml (with costs) is on disk, match it on synthetic data."""
     sbt = _load_screener_backtest()
     if sbt is None:
-        print("      (skip: stock-screener-ml backtest with cost_bps not found)")
-        return
+        raise Skip("stock-screener-ml backtest with cost_bps not found; set SCREENER_PATH")
     prices = synthetic.make_prices(n_tickers=25, n_days=900, seed=5)
     sfn = synthetic.momentum_signal()
     ref = sbt.backtest(prices, sfn, top_n=5, cost_bps=25)
@@ -188,6 +191,16 @@ def test_long_short_hand_checked():
     assert np.isclose(res.equity.iloc[-2], 0.9)
     assert np.isclose(res.equity.iloc[-1], 1.02)
     assert np.isclose(res.turnover.iloc[0], 1.0)                  # traded 2, one-way 1
+
+
+def test_too_few_names_for_short_leg_gives_long_only():
+    idx = pd.bdate_range("2020-01-30", periods=4)
+    prices = pd.DataFrame(1.0, index=idx, columns=list("ABCD"))
+    for scheme in ("equal", "score", "inverse_vol"):
+        res = bt.backtest(prices, lambda w: pd.Series({"A": 3.0, "B": 2.0, "C": 1.0, "D": np.nan}),
+                          top_n=3, short_n=2, weighting=scheme, min_history=1)
+        w = res.weights[idx[2]]
+        assert list(w.index) == ["A", "B", "C"] and (w > 0).all()
 
 
 def test_borrow_fee_on_short_gross():
@@ -393,16 +406,19 @@ def test_tearsheet_writes_html():
 # --------------------------------------------------------------------------- #
 def main() -> int:
     tests = [(n, f) for n, f in globals().items() if n.startswith("test_") and callable(f)]
-    failed = 0
+    failed = skipped = 0
     for name, fn in tests:
         try:
             fn()
             print(f"PASS  {name}")
+        except Skip as e:
+            skipped += 1
+            print(f"SKIP  {name}: {e}")
         except Exception:
             failed += 1
             print(f"FAIL  {name}")
             traceback.print_exc()
-    print(f"\n{len(tests) - failed}/{len(tests)} passed")
+    print(f"\n{len(tests) - failed - skipped} passed, {skipped} skipped, {failed} failed")
     return 1 if failed else 0
 
 

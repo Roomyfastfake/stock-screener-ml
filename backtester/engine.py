@@ -75,9 +75,8 @@ def _target(scores: pd.Series, window: pd.DataFrame, top_n: int, short_n: int,
     ranked = scores.sort_values(ascending=False, kind="mergesort")
     longs = ranked.head(top_n)
     parts = [weight_fn(longs, window)]
-    if short_n > 0:
-        rest = ranked.drop(longs.index)
-        shorts = rest.tail(short_n)
+    shorts = ranked.drop(longs.index).tail(short_n) if short_n > 0 else ranked.iloc[:0]
+    if not shorts.empty:                                    # too few names -> long-only book
         parts.append(-weight_fn(-shorts, window))
     return pd.concat(parts)
 
