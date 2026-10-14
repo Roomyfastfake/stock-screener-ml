@@ -48,7 +48,7 @@ Implemented:
 
 Not yet implemented:
 
-* Fundamentals
+* Real-data run of the fundamental factors (code and tests done, see Step 3)
 * Point-in-time index membership (see survivorship bias below)
 
 ## First Real-Data Run (2026-10-14)
@@ -112,7 +112,7 @@ py -3.14 tests\test_screener.py
 Expected result:
 
 ```text
-40/40 passed
+51/51 passed
 ```
 
 ## Roadmap
@@ -134,11 +134,20 @@ Status: Complete.
 
 ### Step 3: Fundamentals
 
-Planned:
+Status: Built and tested offline; first real run pending (needs `SEC_USER_AGENT`).
 
-* Add trailing P/E, ROE, revenue growth, and other basic fields
-* Handle missing values explicitly
-* Convert fundamentals into cross-sectional z-score factors
+* Point-in-time data from SEC EDGAR XBRL `companyfacts`. Each value is used only from the first trading day after its `filed` date, so restatements never rewrite the past. `yfinance.Ticker.info` was rejected because it is today's snapshot (lookahead).
+* Factors: `roe` (TTM net income / equity, NaN if equity <= 0) and `rev_growth` (TTM revenue vs one year earlier). Both are ratios of reported figures, so stock splits cannot distort them.
+* Periods identified by start/end dates, Q4 derived as FY minus 9M, tag fallbacks merged per period (revenue tags changed with ASC 606), values older than 15 months dropped.
+* Opt-in: `--fundamentals`. Default runs and the README numbers are unchanged.
+* Validation gate: `main.py check-fundamentals --universe sp500` checks at every 10-K that the quarters add up to the full year.
+* Deferred: P/E. It mixes as-reported EPS with split-adjusted prices and would jump at every split; it needs split data and a continuity test first.
+
+```powershell
+$env:SEC_USER_AGENT = "Your Name your.email@example.com"   # SEC requires a contact
+py -3.14 main.py check-fundamentals --universe sp500         # fetch + validate (~1 min at SEC's rate limit)
+py -3.14 main.py backtest --universe sp500 --start 2015-01-01 --offline --fundamentals --top-n 25
+```
 
 ### Step 4: Universe and caching
 

@@ -36,12 +36,20 @@ REV_WINDOW = 5
 WARMUP_ROWS = max(MOM_LOOKBACK + 1, TREND_WINDOW, VOL_WINDOW + 1, REV_WINDOW + 1)
 
 
+FUNDAMENTAL_WEIGHTS: dict[str, float] = {"roe": 0.5, "rev_growth": 0.5}
+
+Panel = dict[str, pd.DataFrame]
+
+
 def build_features(prices: pd.DataFrame,
-                   limits: tuple[float, float] = (0.05, 0.05)) -> dict[str, pd.DataFrame]:
+                   limits: tuple[float, float] = (0.05, 0.05),
+                   fundamentals: Panel | None = None) -> dict[str, pd.DataFrame]:
     """Compute z-scored factor frames from a ``(dates x tickers)`` price panel.
 
     Each factor is lookahead-free (built only from ``shift``/``rolling``) and
-    then winsorized + cross-sectionally z-scored.
+    then winsorized + cross-sectionally z-scored. ``fundamentals`` are optional
+    precomputed point-in-time raw panels (``fundamentals.load_panel``); they are
+    aligned to ``prices`` and scored the same way.
     """
     raw = {
         "momentum": ind.momentum(prices, MOM_LOOKBACK, MOM_SKIP),
@@ -49,28 +57,33 @@ def build_features(prices: pd.DataFrame,
         "low_vol": ind.low_volatility(prices, VOL_WINDOW),
         "reversal": ind.reversal(prices, REV_WINDOW),
     }
+    for name, panel in (fundamentals or {}).items():
+        raw[name] = panel.reindex(index=prices.index, columns=prices.columns)
     return {name: sc.zscore_factor(frame, limits) for name, frame in raw.items()}
 
 
 def latest_features(prices: pd.DataFrame,
-                    limits: tuple[float, float] = (0.05, 0.05)) -> dict[str, pd.DataFrame]:
+                    limits: tuple[float, float] = (0.05, 0.05),
+                    fundamentals: Panel | None = None) -> dict[str, pd.DataFrame]:
     """``build_features`` at the last row only (one-row frames), from the trailing
-    ``WARMUP_ROWS`` rows. Same values, O(1) in history length."""
+    ``WARMUP_ROWS`` rows. Same values, O(1) in history length (fundamental panels
+    are already point-in-time per date, so only their last row is read)."""
     return {name: f.iloc[[-1]]
-            for name, f in build_features(prices.iloc[-WARMUP_ROWS:], limits).items()}
+            for name, f in build_features(prices.iloc[-WARMUP_ROWS:], limits,
+                                          fundamentals).items()}
 
 
 def rank_universe(prices: pd.DataFrame,
                   weights: dict[str, float] | None = None,
-                  asof=None) -> pd.DataFrame:
+                  asof=None, fundamentals: Panel | None = None) -> pd.DataFrame:
     """Rank the universe by composite score at a single date (default: last).
 
     Returns a table indexed by ticker with each factor's z-score, the composite
     score, and the rank (1 = most attractive). Names with no valid score are
     dropped.
     """
-    weights = DEFAULT_WEIGHTS if weights is None else weights
-    factors = build_features(prices)
+    weights = default_weights(fundamentals) if weights is None else weights
+    factors = build_features(prices, fundamentals=fundamentals)
     composite = sc.composite_score(factors, weights)
     if asof is None:
         asof = composite.index[-1]
@@ -82,23 +95,36 @@ def rank_universe(prices: pd.DataFrame,
     return row
 
 
-def make_signal_fn(weights: dict[str, float] | None = None) -> Callable[[pd.DataFrame], pd.Series]:
+def default_weights(fundamentals: Panel | None = None) -> dict[str, float]:
+    """Price-factor defaults, plus fundamental defaults for the panels supplied."""
+    w = dict(DEFAULT_WEIGHTS)
+    for name in fundamentals or {}:
+        w[name] = FUNDAMENTAL_WEIGHTS.get(name, 0.5)
+    return w
+
+
+def make_signal_fn(weights: dict[str, float] | None = None,
+                   fundamentals: Panel | None = None) -> Callable[[pd.DataFrame], pd.Series]:
     """Build a ``signal_fn(price_window) -> score per ticker`` for the backtest.
 
     ``price_window`` is the price history *up to and including* the rebalance
     date. The returned score is the composite at the last row of that window,
-    so the signal can only ever use past data.
+    so the signal can only ever use past data. Fundamental panels are
+    point-in-time per date, so reading their row at the window's last date is
+    equally past-only.
     """
-    weights = DEFAULT_WEIGHTS if weights is None else weights
+    weights = default_weights(fundamentals) if weights is None else weights
 
     def signal_fn(price_window: pd.DataFrame) -> pd.Series:
-        return sc.composite_score(latest_features(price_window), weights).iloc[-1]
+        factors = latest_features(price_window, fundamentals=fundamentals)
+        return sc.composite_score(factors, weights).iloc[-1]
 
     return signal_fn
 
 
 def make_bayes_signal_fn(prior_var: float = 1.0, horizon: int = 21,
                          shrink: bool = False, min_obs: int = 250,
+                         fundamentals: Panel | None = None,
                          ) -> Callable[[pd.DataFrame], pd.Series]:
     """Build a *walk-forward* Bayesian ``signal_fn`` for the backtest.
 
@@ -124,7 +150,7 @@ def make_bayes_signal_fn(prior_var: float = 1.0, horizon: int = 21,
     as running sufficient statistics, so each call only absorbs the dates whose
     forward return newly realized (see ``_WalkForwardBayes``).
     """
-    return _WalkForwardBayes(prior_var, horizon, shrink, min_obs)
+    return _WalkForwardBayes(prior_var, horizon, shrink, min_obs, fundamentals)
 
 
 class _WalkForwardBayes:
@@ -138,9 +164,11 @@ class _WalkForwardBayes:
     reused instance can never train on rows from beyond the current window.
     """
 
-    def __init__(self, prior_var: float, horizon: int, shrink: bool, min_obs: int):
+    def __init__(self, prior_var: float, horizon: int, shrink: bool, min_obs: int,
+                 fundamentals: Panel | None = None):
         self.prior_var, self.horizon = prior_var, horizon
         self.shrink, self.min_obs = shrink, min_obs
+        self.fundamentals = fundamentals         # fixed for the instance's lifetime
         self._reset()
 
     def _reset(self) -> None:
@@ -161,7 +189,8 @@ class _WalkForwardBayes:
         """Add training dates ``a .. b-1`` (forward returns realized in ``window``)."""
         lo = max(0, a - WARMUP_ROWS + 1)
         factors = {k: f.iloc[a - lo:b - lo]
-                   for k, f in build_features(window.iloc[lo:b]).items()}
+                   for k, f in build_features(window.iloc[lo:b],
+                                              fundamentals=self.fundamentals).items()}
         prices = window.iloc[a:b + self.horizon]
         stats = bayes.design_stats(factors, prices, self.horizon)
         self._stats = stats if self._stats is None else self._stats + stats
@@ -181,4 +210,5 @@ class _WalkForwardBayes:
             return nan                           # warm-up: too little history to trust
         post = bayes.posterior_from_stats(self._stats, self.prior_var)
         weights = post.shrunk_weights() if self.shrink else post.weights
-        return sc.composite_score(latest_features(price_window), weights).iloc[-1]
+        factors = latest_features(price_window, fundamentals=self.fundamentals)
+        return sc.composite_score(factors, weights).iloc[-1]

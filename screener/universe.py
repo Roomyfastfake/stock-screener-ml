@@ -1,7 +1,7 @@
 """Ticker universes loaded from local CSV files.
 
 ``data/sp500.csv`` is a committed snapshot of *current* S&P 500 members
-(columns ``ticker,name,sector``). Backtesting history on today's members has
+(columns ``ticker,name,sector,cik``). Backtesting history on today's members has
 survivorship bias: names that left the index (often after falling) are missing.
 Treat results on this universe as optimistic until point-in-time membership exists.
 
@@ -44,6 +44,15 @@ def load_sp500(sector: str | None = None) -> list[str]:
     return load_universe(SP500_CSV, sector=sector)
 
 
+def cik_map(path: str | pathlib.Path = SP500_CSV) -> dict[str, int]:
+    """Yahoo ticker -> SEC CIK from a universe CSV's optional ``cik`` column."""
+    df = pd.read_csv(path, comment="#")
+    if "cik" not in df.columns:
+        return {}
+    df = df.dropna(subset=["cik"])
+    return {to_yahoo(t): int(c) for t, c in zip(df["ticker"].astype(str), df["cik"])}
+
+
 def resolve(name_or_path: str, sector: str | None = None) -> list[str]:
     """``"sp500"`` -> the bundled snapshot; anything else is a CSV path."""
     if name_or_path.lower() == "sp500":
@@ -62,7 +71,8 @@ def refresh_sp500(path: str | pathlib.Path = SP500_CSV) -> pd.DataFrame:
     table = pd.read_html(io.StringIO(html), attrs={"id": "constituents"})[0]
     out = pd.DataFrame({"ticker": table["Symbol"].astype(str).str.strip(),
                         "name": table["Security"].astype(str).str.strip(),
-                        "sector": table["GICS Sector"].astype(str).str.strip()})
+                        "sector": table["GICS Sector"].astype(str).str.strip(),
+                        "cik": pd.to_numeric(table["CIK"], errors="coerce").astype("Int64")})
     out = out.sort_values("ticker").reset_index(drop=True)
     path = pathlib.Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

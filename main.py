@@ -55,32 +55,53 @@ def _load_prices(args) -> pd.DataFrame:
     return prices
 
 
-def _weights(args, prices: pd.DataFrame) -> dict[str, float]:
-    factors = screen.build_features(prices)
+def _fundamentals(args, prices: pd.DataFrame):
+    """Point-in-time fundamental panels for ``--fundamentals``, else None."""
+    if not getattr(args, "fundamentals", False):
+        return None
+    from screener import fundamentals as fu
+    ciks = universe.cik_map()
+    fc = fu.FundamentalsCache(args.sec_cache_dir)
+    panel, unmapped = fu.load_panel(list(prices.columns), prices.index, ciks, cache=fc,
+                                    offline=args.offline, refresh=args.refresh)
+    if unmapped:
+        print(f"fundamentals: no CIK for {len(unmapped)} tickers: {unmapped[:10]}")
+    for d in (prices.index[len(prices) // 4], prices.index[len(prices) // 2], prices.index[-1]):
+        cov = {k: f"{v:.0%}" for k, v in fu.coverage(panel, d).items()}
+        print(f"fundamentals coverage {d.date()}: {cov}")
+    return panel
+
+
+def _weights(args, prices: pd.DataFrame, fund=None) -> dict[str, float]:
     if getattr(args, "bayes", False):
+        factors = screen.build_features(prices, fundamentals=fund)
         scorer = bayes.BayesianScorer(prior_var=args.prior_var, horizon=args.horizon)
         scorer.fit(factors, prices)
         print("learned weights:", {k: round(float(v), 4) for k, v in scorer.weights.items()})
         print("signal/noise   :", {k: round(float(v), 2) for k, v in scorer.posterior.signal_to_noise.items()})
         return scorer.weights
-    return screen.DEFAULT_WEIGHTS
+    return screen.default_weights(fund)
 
 
 def cmd_rank(args) -> None:
     prices = _load_prices(args)
-    table = screen.rank_universe(prices, weights=_weights(args, prices))
+    fund = _fundamentals(args, prices)
+    table = screen.rank_universe(prices, weights=_weights(args, prices, fund),
+                                 fundamentals=fund)
     print(table.head(args.top_n).round(3).to_string())
 
 
 def cmd_backtest(args) -> None:
     prices = _load_prices(args)
+    fund = _fundamentals(args, prices)
     if getattr(args, "bayes", False):
         # Walk-forward: weights are refit on each rebalance window (past only),
         # so this is genuinely out-of-sample -- no full-sample lookahead.
         signal_fn = screen.make_bayes_signal_fn(prior_var=args.prior_var,
-                                                horizon=args.horizon)
+                                                horizon=args.horizon, fundamentals=fund)
     else:
-        signal_fn = screen.make_signal_fn(weights=_weights(args, prices))
+        signal_fn = screen.make_signal_fn(weights=_weights(args, prices, fund),
+                                          fundamentals=fund)
     if getattr(args, "engine", "builtin") == "backtester":
         result = _run_external(args, prices, signal_fn)
     else:
@@ -116,6 +137,33 @@ def cmd_fetch(args) -> None:
     if not _tickers(args):
         raise SystemExit("fetch needs --universe or --tickers")
     _load_prices(args)
+
+
+def cmd_check_fundamentals(args) -> None:
+    """Fetch/cache SEC fundamentals for the universe and run the TTM validation gate."""
+    from screener import fundamentals as fu
+    tickers = _tickers(args)
+    if not tickers:
+        raise SystemExit("check-fundamentals needs --universe or --tickers")
+    ciks = universe.cik_map()
+    fc = fu.FundamentalsCache(args.sec_cache_dir)
+    seen, tally = set(), {c: [0, 0, 0] for c in ("revenue", "net_income")}  # checked, passed, cos ok
+    for i, t in enumerate(tickers, 1):
+        cik = ciks.get(t)
+        if cik is None or cik in seen:
+            continue
+        seen.add(cik)
+        rows = fc.rows(cik, offline=args.offline, refresh=args.refresh)
+        for c in tally:
+            n, ok = fu.ttm_consistency(rows, c)
+            tally[c][0] += n
+            tally[c][1] += ok
+            tally[c][2] += int(n > 0 and ok == n)
+        if i % 50 == 0:
+            print(f"  {i}/{len(tickers)}")
+    for c, (n, ok, cos) in tally.items():
+        print(f"{c}: {ok}/{n} 10-K checks pass ({ok / max(n, 1):.1%}); "
+              f"{cos}/{len(seen)} companies pass every check")
 
 
 def cmd_refresh_universe(args) -> None:
@@ -169,6 +217,11 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--cost-model", dest="cost_model", choices=["additive", "nav"],
                         default="additive", help="additive matches the builtin engine exactly")
     common.add_argument("--tearsheet", default=None, help="write an HTML tearsheet to this path")
+    common.add_argument("--fundamentals", action="store_true",
+                        help="add point-in-time SEC factors (roe, rev_growth); needs SEC_USER_AGENT "
+                             "unless cached")
+    common.add_argument("--sec-cache-dir", dest="sec_cache_dir",
+                        default=str(universe.DATA_DIR / "cache" / "sec"))
     common.add_argument("--benchmark", default=None,
                         help="benchmark ticker for relative stats, e.g. SPY (cached like prices)")
 
@@ -179,6 +232,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("demo", parents=[common]).set_defaults(func=cmd_demo)
     sub.add_parser("fetch", parents=[common],
                    help="warm the price cache for --universe/--tickers").set_defaults(func=cmd_fetch)
+    sub.add_parser("check-fundamentals", parents=[common],
+                   help="fetch SEC fundamentals and run the TTM validation gate"
+                   ).set_defaults(func=cmd_check_fundamentals)
     sub.add_parser("refresh-universe",
                    help="rebuild data/sp500.csv from Wikipedia").set_defaults(func=cmd_refresh_universe)
     return p

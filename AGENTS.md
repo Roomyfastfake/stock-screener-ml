@@ -25,9 +25,20 @@ GitHub: Roomyfastfake/stock-screener-ml. See README.md for usage and roadmap.
   window strictly extends the last one. S&P run: 226s -> 15s fixed, 389s -> 31s Bayes.
   If an indicator lookback changes, `WARMUP_ROWS` is derived from the constants in
   screen.py; the equivalence tests fail if it is too short.
+- Fundamentals on branch `feat/fundamentals` (2026-10-15): `screener/fundamentals.py`,
+  SEC companyfacts, point-in-time by `filed` date (usable next trading day). Factors
+  `roe`, `rev_growth`; opt-in `--fundamentals`. `events()` is the fast one-pass path;
+  `snapshot()` is the pandas reference, pinned by a test. CIKs live in data/sp500.csv.
+- SEC needs `SEC_USER_AGENT` (name + email). Never hardcode or commit it, and never
+  use the user's address without asking. A 403 means it is missing.
+- P/E deliberately deferred: as-reported EPS vs split-adjusted prices breaks at splits.
+- Before reporting any fundamentals backtest, run `check-fundamentals` and report the
+  pass rate (TTM from quarters must equal 10-K FY).
 - Known limits: survivorship bias (current members only).
-- Branch stack: feat/costs-turnover -> feat/universe-cache -> perf/fast-signals.
-- Next: step 3 (fundamentals), point-in-time membership.
+- Branch stack: feat/costs-turnover -> feat/universe-cache -> perf/fast-signals
+  -> feat/fundamentals.
+- Next: real fundamentals run once SEC_USER_AGENT is set; P/E with split handling;
+  point-in-time membership.
 - Sibling repo `backtester` (C:\Users\TANUSH\projects\backtester, a sibling folder) is a
   standalone backtesting engine. See Integration plan.
 

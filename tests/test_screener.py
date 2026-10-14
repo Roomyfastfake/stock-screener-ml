@@ -6,6 +6,7 @@ Plain asserts + a tiny runner so there is no pytest dependency.
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import sys
 import tempfile
@@ -18,6 +19,7 @@ import main as cli
 from screener import backtest as bt
 from screener import bayes
 from screener import cache
+from screener import fundamentals as fu
 from screener import indicators as ind
 from screener import score as sc
 from screener import screen
@@ -405,6 +407,237 @@ def test_design_stats_match_direct_regression():
               + bayes.DesignStats.from_arrays(X[200:], y[200:], list("abc")))
     whole = bayes.DesignStats.from_arrays(X, y, list("abc"))
     assert np.allclose(halves.xtx, whole.xtx) and halves.n == whole.n
+
+
+# --------------------------------------------------------------------------- #
+# fundamentals (step 3): point-in-time SEC companyfacts
+# --------------------------------------------------------------------------- #
+def _fact(start, end, val, filed, form="10-Q", fy=2099, fp="Q9"):
+    # fy/fp deliberately wrong: the parser must identify periods by start/end only.
+    f = {"end": end, "val": val, "filed": filed, "form": form, "fy": fy, "fp": fp}
+    if start is not None:
+        f["start"] = start
+    return f
+
+
+def _company_facts(rev_tag_2020="Revenues", extra_rev=()):
+    """Calendar-year filer. Revenue 2019 Q1-Q3 = 100/110/120, FY 460 (Q4 130);
+    2020 Q1-Q3 = 120/130/140, FY 540 (Q4 150). Net income 10/qtr in 2019 (FY 40),
+    12/qtr in 2020 (FY 48). Equity 200 at every quarter end. 10-Qs carry 3M and
+    9M YTD facts; Q4 is never reported discretely."""
+    rev19 = [_fact("2019-01-01", "2019-03-31", 100, "2019-05-01"),
+             _fact("2019-04-01", "2019-06-30", 110, "2019-08-01"),
+             _fact("2019-07-01", "2019-09-30", 120, "2019-11-01"),
+             _fact("2019-01-01", "2019-09-30", 330, "2019-11-01"),
+             _fact("2019-01-01", "2019-12-31", 460, "2020-02-14", "10-K")]
+    rev20 = [_fact("2020-01-01", "2020-03-31", 120, "2020-05-01"),
+             _fact("2020-04-01", "2020-06-30", 130, "2020-08-03"),
+             _fact("2020-07-01", "2020-09-30", 140, "2020-11-02"),
+             _fact("2020-01-01", "2020-09-30", 390, "2020-11-02"),
+             _fact("2020-01-01", "2020-12-31", 540, "2021-02-12", "10-K")]
+    filings = {"2019-03-31": "2019-05-01", "2019-06-30": "2019-08-01",
+               "2019-09-30": "2019-11-01", "2019-12-31": "2020-02-14",
+               "2020-03-31": "2020-05-01", "2020-06-30": "2020-08-03",
+               "2020-09-30": "2020-11-02", "2020-12-31": "2021-02-12"}
+    ni, eq = [], []
+    for end, filed in filings.items():
+        q = 10 if end.startswith("2019") else 12
+        y = end[:4]
+        if end.endswith("12-31"):
+            ni.append(_fact(f"{y}-01-01", end, 4 * q, filed, "10-K"))
+        else:
+            ni.append(_fact(f"{y}-{int(end[5:7]) - 2:02d}-01", end, q, filed))
+            if end.endswith("09-30"):
+                ni.append(_fact(f"{y}-01-01", end, 3 * q, filed))
+        eq.append(_fact(None, end, 200, filed, "10-K" if end.endswith("12-31") else "10-Q"))
+    gaap = {"NetIncomeLoss": {"units": {"USD": ni}},
+            "StockholdersEquity": {"units": {"USD": eq}}}
+    rev = {"Revenues": rev19 if rev_tag_2020 != "Revenues" else rev19 + rev20}
+    if rev_tag_2020 != "Revenues":
+        rev[rev_tag_2020] = rev20
+    for tag, facts in rev.items():
+        gaap[tag] = {"units": {"USD": facts + [f for t, f in extra_rev if t == tag]}}
+    return {"facts": {"us-gaap": gaap}}
+
+
+def test_fundamentals_q4_derivation_and_ttm():
+    rows = fu.extract(_company_facts())
+    revq = fu.discrete_quarters(fu._latest_known(rows[rows.concept == "revenue"],
+                                                 pd.Timestamp("2021-03-01")))
+    assert revq[pd.Timestamp("2019-12-31")] == 130 and revq[pd.Timestamp("2020-12-31")] == 150
+    assert fu.ttm(revq, pd.Timestamp("2020-12-31")) == 540     # equals the 10-K FY value
+    s = fu.snapshot(rows, pd.Timestamp("2021-02-12"))
+    assert s["period_end"] == pd.Timestamp("2020-12-31")
+    assert np.isclose(s["rev_growth"], 540 / 460 - 1)
+    assert np.isclose(s["roe"], 48 / 200)
+    mid = fu.snapshot(rows, pd.Timestamp("2020-11-02"))       # TTM = Q4'19 + Q1-Q3'20
+    assert np.isclose(mid["roe"], (10 + 12 + 12 + 12) / 200)
+    assert np.isnan(mid["rev_growth"])                         # no TTM a year earlier yet
+
+
+def test_fundamentals_fast_events_match_reference_snapshots():
+    variants = [_company_facts(),
+                _company_facts("RevenueFromContractWithCustomerExcludingAssessedTax"),
+                _company_facts(extra_rev=[("Revenues", _fact("2020-01-01", "2020-03-31", 125,
+                                                             "2021-05-03"))])]
+    for facts in variants:
+        rows = fu.extract(facts)
+        ev = fu.events(rows)
+        assert len(ev) == rows["filed"].nunique()
+        for d in ev.index:
+            ref = fu.snapshot(rows, d)
+            assert ev.loc[d, "period_end"] == ref["period_end"]
+            for f in fu.FACTORS:
+                got = float(ev.loc[d, f])
+                assert (np.isnan(got) and np.isnan(ref[f])) or np.isclose(got, ref[f]), (d, f)
+
+
+def test_fundamentals_ttm_consistency_gate():
+    rows = fu.extract(_company_facts())
+    assert fu.ttm_consistency(rows, "revenue") == (2, 2)
+    bad = _company_facts()                                     # Q2'20 double-reported wrong
+    bad["facts"]["us-gaap"]["Revenues"]["units"]["USD"].append(
+        _fact("2020-04-01", "2020-06-30", 999, "2020-08-04"))
+    assert fu.ttm_consistency(fu.extract(bad), "revenue") == (2, 1)
+
+
+def test_fundamentals_visible_only_after_filing_day():
+    idx = pd.bdate_range("2020-12-01", "2021-03-31")
+    daily = fu.to_daily(fu.events(fu.extract(_company_facts())), idx)
+    filed = pd.Timestamp("2021-02-12")                         # Friday
+    assert np.isclose(daily.loc[filed, "roe"], 46 / 200)       # still the Q3 snapshot
+    assert np.isclose(daily.loc[pd.Timestamp("2021-02-15"), "roe"], 48 / 200)
+
+
+def test_fundamentals_tag_switch_merges_history():
+    same = fu.snapshot(fu.extract(_company_facts()), pd.Timestamp("2021-03-01"))
+    switched = fu.snapshot(fu.extract(_company_facts(
+        "RevenueFromContractWithCustomerExcludingAssessedTax")), pd.Timestamp("2021-03-01"))
+    assert np.isclose(same["rev_growth"], switched["rev_growth"])
+
+
+def test_fundamentals_restatement_does_not_rewrite_past():
+    idx = pd.bdate_range("2019-01-01", "2021-12-31")
+    base = fu.to_daily(fu.events(fu.extract(_company_facts())), idx)
+    restated = _company_facts(extra_rev=[("Revenues",
+                                          _fact("2020-01-01", "2020-03-31", 125, "2021-05-03"))])
+    after = fu.to_daily(fu.events(fu.extract(restated)), idx)
+    cut = pd.Timestamp("2021-05-03")
+    pd.testing.assert_frame_equal(base.loc[:cut], after.loc[:cut])
+    assert np.isclose(after.loc[pd.Timestamp("2021-05-04"), "rev_growth"], 545 / 460 - 1)
+
+
+def test_fundamentals_poisoned_future_filing_ignored():
+    idx = pd.bdate_range("2019-01-01", "2021-12-31")
+    base = fu.to_daily(fu.events(fu.extract(_company_facts())), idx)
+    poison = _company_facts(extra_rev=[("Revenues",
+                                        _fact("2019-01-01", "2019-03-31", 1e9, "2021-06-01"))])
+    after = fu.to_daily(fu.events(fu.extract(poison)), idx)
+    t = pd.Timestamp("2021-06-01")
+    pd.testing.assert_frame_equal(base.loc[:t], after.loc[:t])
+
+
+def test_fundamentals_stale_values_expire():
+    idx = pd.bdate_range("2021-01-01", "2022-06-30")
+    daily = fu.to_daily(fu.events(fu.extract(_company_facts())), idx)
+    end = pd.Timestamp("2020-12-31")
+    assert daily.loc[end + pd.Timedelta(days=400):, "roe"].notna().any()
+    assert daily.loc[end + fu.MAX_STALENESS + pd.Timedelta(days=3):, "roe"].isna().all()
+
+
+def test_fundamentals_cache_and_user_agent():
+    with tempfile.TemporaryDirectory() as d:
+        class FakeClient:
+            calls = 0
+
+            def company_facts(self, cik):
+                FakeClient.calls += 1
+                return _company_facts()
+
+        fc = fu.FundamentalsCache(d, client=FakeClient())
+        try:
+            fu.FundamentalsCache(d).rows(1, offline=True)
+            raise AssertionError("expected offline miss")
+        except LookupError:
+            pass
+        first = fc.rows(1)
+        again = fu.FundamentalsCache(d).rows(1, offline=True)
+        pd.testing.assert_frame_equal(first, again)
+        assert FakeClient.calls == 1
+
+        panel, unmapped = fu.load_panel(["AAA", "AAB", "ZZZ"], pd.bdate_range("2020-01-01", "2021-06-30"),
+                                        {"AAA": 1, "AAB": 1}, cache=fc)
+        assert unmapped == ["ZZZ"] and FakeClient.calls == 1     # share classes fetched once
+        assert list(panel["roe"].columns) == ["AAA", "AAB", "ZZZ"]
+        assert panel["roe"]["ZZZ"].isna().all()
+
+    saved = os.environ.pop("SEC_USER_AGENT", None)
+    try:
+        fu.SecClient()
+        raise AssertionError("expected missing User-Agent error")
+    except RuntimeError as exc:
+        assert "SEC_USER_AGENT" in str(exc)
+    finally:
+        if saved is not None:
+            os.environ["SEC_USER_AGENT"] = saved
+
+
+def test_cli_fundamentals_offline_from_cache():
+    with tempfile.TemporaryDirectory() as d:
+        prices = synthetic.make_prices(n_tickers=6, n_days=400, seed=0)
+        cache.PriceCache(d, downloader=lambda t, s, e: prices[t]).get(list(prices.columns),
+                                                                      "2000-01-01")
+        sec_dir = pathlib.Path(d) / "sec"
+        sec_dir.mkdir()
+        rows = fu.extract(_company_facts())
+        ciks = {t: 1000 + i for i, t in enumerate(prices.columns)}
+        for cik in ciks.values():
+            rows.to_parquet(sec_dir / f"{cik:010d}.parquet")
+        orig = universe.cik_map
+        universe.cik_map = lambda path=None: ciks
+        try:
+            args = cli.build_parser().parse_args(
+                ["backtest", "--tickers", *prices.columns, "--start", "2000-01-01", "--offline",
+                 "--cache-dir", d, "--sec-cache-dir", str(sec_dir), "--fundamentals",
+                 "--top-n", "2"])
+            cli.cmd_backtest(args)                # cache only: no SEC_USER_AGENT needed
+        finally:
+            universe.cik_map = orig
+
+
+def _fake_fundamentals(prices, seed=5):
+    """Step-like PIT panels (values change ~quarterly), with gaps."""
+    rng = np.random.default_rng(seed)
+    out = {}
+    for name in ("roe", "rev_growth"):
+        raw = pd.DataFrame(np.nan, index=prices.index, columns=prices.columns)
+        raw.iloc[::63] = rng.normal(size=raw.iloc[::63].shape)
+        raw = raw.ffill()
+        out[name] = raw.mask(rng.random(raw.shape) < 0.1)
+    return out
+
+
+def test_signals_with_fundamentals_match_reference():
+    prices = _gappy_prices()
+    fund = _fake_fundamentals(prices)
+    weights = screen.default_weights(fund)
+    sfn = screen.make_signal_fn(fundamentals=fund)
+    bfn = screen.make_bayes_signal_fn(horizon=21, min_obs=100, fundamentals=fund)
+    for i in range(150, len(prices), 41):
+        w = prices.iloc[:i + 1]
+        full = screen.build_features(w, fundamentals=fund)
+        ref = sc.composite_score(full, weights).iloc[-1]
+        pd.testing.assert_series_equal(sfn(w), ref, check_names=False, rtol=0, atol=1e-10)
+        try:
+            post = bayes.fit_weights(full, w, horizon=21)
+        except ValueError:
+            continue
+        if post.n_obs >= 100:
+            ref_b = sc.composite_score(full, post.weights).iloc[-1]
+            pd.testing.assert_series_equal(bfn(w), ref_b, check_names=False, rtol=0, atol=1e-9)
+        else:
+            bfn(w)
+    assert set(screen.build_features(prices, fundamentals=fund)) >= {"roe", "rev_growth"}
 
 
 # --------------------------------------------------------------------------- #
