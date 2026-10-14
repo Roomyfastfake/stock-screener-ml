@@ -17,7 +17,7 @@ GitHub: Roomyfastfake/stock-screener-ml. See README.md for usage and roadmap.
   `--cost-bps 10`, library default 0.
 - Next: step 4 (S&P 500 CSV universe + local parquet cache, first real-data run),
   then step 3 (fundamentals).
-- Sibling repo `backtester` (moving to C:\Users\TANUSH\projects\backtester) is a
+- Sibling repo `backtester` (C:\Users\TANUSH\projects\backtester, a sibling folder) is a
   standalone backtesting engine. See Integration plan.
 
 ## Integration plan with `backtester` (agreed 2026-10-14)
