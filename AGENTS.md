@@ -2,7 +2,7 @@
 
 Standalone backtesting engine, spun off from the sibling project
 `stock-screener-ml` (GitHub: Roomyfastfake/stock-screener-ml, local clone at
-`C:\Users\TANUSH\.claude\projects\stock-screener-ml`).
+`C:\Users\TANUSH\projects\stock-screener-ml`).
 
 ## Role (integration plan agreed 2026-10-14, see screener AGENTS.md)
 - **stock-screener-ml = alpha layer**: data, universe, factors, scoring, walk-forward
