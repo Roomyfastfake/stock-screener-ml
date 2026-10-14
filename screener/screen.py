@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Callable
 
+import numpy as np
 import pandas as pd
 
 from . import bayes
@@ -24,6 +25,16 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "reversal": 0.5,
 }
 
+# Indicator parameters used by build_features.
+MOM_LOOKBACK, MOM_SKIP = 126, 21
+TREND_WINDOW = 50
+VOL_WINDOW = 21
+REV_WINDOW = 5
+# Trailing rows needed for every factor's value at the last row: each factor is a
+# fixed-length trailing window (momentum shifts by MOM_LOOKBACK, vol needs
+# VOL_WINDOW returns = VOL_WINDOW + 1 prices) and scoring is per row.
+WARMUP_ROWS = max(MOM_LOOKBACK + 1, TREND_WINDOW, VOL_WINDOW + 1, REV_WINDOW + 1)
+
 
 def build_features(prices: pd.DataFrame,
                    limits: tuple[float, float] = (0.05, 0.05)) -> dict[str, pd.DataFrame]:
@@ -33,12 +44,20 @@ def build_features(prices: pd.DataFrame,
     then winsorized + cross-sectionally z-scored.
     """
     raw = {
-        "momentum": ind.momentum(prices),
-        "trend": ind.trend(prices),
-        "low_vol": ind.low_volatility(prices),
-        "reversal": ind.reversal(prices),
+        "momentum": ind.momentum(prices, MOM_LOOKBACK, MOM_SKIP),
+        "trend": ind.trend(prices, TREND_WINDOW),
+        "low_vol": ind.low_volatility(prices, VOL_WINDOW),
+        "reversal": ind.reversal(prices, REV_WINDOW),
     }
     return {name: sc.zscore_factor(frame, limits) for name, frame in raw.items()}
+
+
+def latest_features(prices: pd.DataFrame,
+                    limits: tuple[float, float] = (0.05, 0.05)) -> dict[str, pd.DataFrame]:
+    """``build_features`` at the last row only (one-row frames), from the trailing
+    ``WARMUP_ROWS`` rows. Same values, O(1) in history length."""
+    return {name: f.iloc[[-1]]
+            for name, f in build_features(prices.iloc[-WARMUP_ROWS:], limits).items()}
 
 
 def rank_universe(prices: pd.DataFrame,
@@ -73,9 +92,7 @@ def make_signal_fn(weights: dict[str, float] | None = None) -> Callable[[pd.Data
     weights = DEFAULT_WEIGHTS if weights is None else weights
 
     def signal_fn(price_window: pd.DataFrame) -> pd.Series:
-        factors = build_features(price_window)
-        composite = sc.composite_score(factors, weights)
-        return composite.iloc[-1]
+        return sc.composite_score(latest_features(price_window), weights).iloc[-1]
 
     return signal_fn
 
@@ -102,18 +119,66 @@ def make_bayes_signal_fn(prior_var: float = 1.0, horizon: int = 21,
     Until ``min_obs`` realized observations exist the signal is all-NaN, so the
     backtest skips the rebalance (it cannot fit weights on an empty/degenerate
     sample during warm-up).
+
+    Speed: the fit is identical to ``bayes.fit_weights`` on the window, but kept
+    as running sufficient statistics, so each call only absorbs the dates whose
+    forward return newly realized (see ``_WalkForwardBayes``).
+    """
+    return _WalkForwardBayes(prior_var, horizon, shrink, min_obs)
+
+
+class _WalkForwardBayes:
+    """Stateful walk-forward Bayes signal.
+
+    Training date ``d`` contributes once ``d + horizon`` is inside the window, and
+    its contribution depends only on prices up to ``d + horizon``. So when a new
+    window *extends* the previous one (same columns, same index and values on the
+    overlap) the old statistics stay valid and only new dates are added. Any other
+    window (shorter, reordered, or with changed history) resets the state, so a
+    reused instance can never train on rows from beyond the current window.
     """
 
-    def signal_fn(price_window: pd.DataFrame) -> pd.Series:
-        factors = build_features(price_window)
-        try:
-            post = bayes.fit_weights(factors, price_window, horizon=horizon,
-                                     prior_var=prior_var)
-        except ValueError:                       # no realized training rows yet
-            return pd.Series(float("nan"), index=price_window.columns)
-        if post.n_obs < min_obs:                 # too little history to trust
-            return pd.Series(float("nan"), index=price_window.columns)
-        weights = post.shrunk_weights() if shrink else post.weights
-        return sc.composite_score(factors, weights).iloc[-1]
+    def __init__(self, prior_var: float, horizon: int, shrink: bool, min_obs: int):
+        self.prior_var, self.horizon = prior_var, horizon
+        self.shrink, self.min_obs = shrink, min_obs
+        self._reset()
 
-    return signal_fn
+    def _reset(self) -> None:
+        self._prev: tuple | None = None          # (index, columns, values) of last window
+        self._done = 0                           # training dates [0, _done) absorbed
+        self._stats: bayes.DesignStats | None = None
+
+    def _extends(self, window: pd.DataFrame, values: np.ndarray) -> bool:
+        if self._prev is None:
+            return False
+        index, columns, prev_values = self._prev
+        n = len(index)
+        return (len(window) >= n and window.columns.equals(columns)
+                and window.index[:n].equals(index)
+                and np.array_equal(values[:n], prev_values, equal_nan=True))
+
+    def _absorb(self, window: pd.DataFrame, a: int, b: int) -> None:
+        """Add training dates ``a .. b-1`` (forward returns realized in ``window``)."""
+        lo = max(0, a - WARMUP_ROWS + 1)
+        factors = {k: f.iloc[a - lo:b - lo]
+                   for k, f in build_features(window.iloc[lo:b]).items()}
+        prices = window.iloc[a:b + self.horizon]
+        stats = bayes.design_stats(factors, prices, self.horizon)
+        self._stats = stats if self._stats is None else self._stats + stats
+
+    def __call__(self, price_window: pd.DataFrame) -> pd.Series:
+        values = price_window.to_numpy(dtype=float, copy=True)
+        if not self._extends(price_window, values):
+            self._reset()
+        upto = max(len(price_window) - self.horizon, 0)
+        if upto > self._done:
+            self._absorb(price_window, self._done, upto)
+            self._done = upto
+        self._prev = (price_window.index, price_window.columns, values)
+
+        nan = pd.Series(float("nan"), index=price_window.columns)
+        if self._stats is None or self._stats.n < self.min_obs:
+            return nan                           # warm-up: too little history to trust
+        post = bayes.posterior_from_stats(self._stats, self.prior_var)
+        weights = post.shrunk_weights() if self.shrink else post.weights
+        return sc.composite_score(latest_features(price_window), weights).iloc[-1]

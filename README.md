@@ -53,12 +53,15 @@ Not yet implemented:
 
 ## First Real-Data Run (2026-10-14)
 
-S&P 500, 2015-01-02 to 2026-10-13, fixed default weights, top 25 equal weight, monthly, 10 bps per side:
+S&P 500, 2015-01-02 to 2026-10-13, top 25 equal weight, monthly, 10 bps per side:
 
-| Engine | CAGR | Sharpe | Max DD | Beta vs SPY | Alpha (ann.) | Info ratio |
-|---|---|---|---|---|---|---|
-| builtin (monthly stats) | 20.9% | 1.00 | -31% | n/a | n/a | n/a |
-| backtester (daily stats, NAV costs) | 18.5% | 0.90 | -42% | 0.95 | 5.1% | 0.33 |
+| Weights | Engine | CAGR | Vol | Sharpe | Max DD | Beta vs SPY | Alpha (ann.) | Info ratio |
+|---|---|---|---|---|---|---|---|---|
+| fixed default | builtin (monthly stats) | 20.9% | 19.2% | 1.00 | -31% | n/a | n/a | n/a |
+| fixed default | backtester (daily stats, NAV costs) | 18.5% | 21.5% | 0.90 | -42% | 0.95 | 5.1% | 0.33 |
+| walk-forward Bayes | builtin (monthly stats) | 34.1% | 34.9% | 0.85 | -45% | n/a | n/a | n/a |
+
+The Bayes book earns more but takes much more risk (vol 35%) for a lower Sharpe than fixed weights.
 
 **Treat these as optimistic.** The universe is *today's* S&P 500 members, so every stock that was dropped from the index after doing badly is missing from the history (survivorship bias). The daily drawdown is deeper than the monthly one because monthly stats only see month-end marks.
 
@@ -109,7 +112,7 @@ py -3.14 tests\test_screener.py
 Expected result:
 
 ```text
-33/33 passed
+40/40 passed
 ```
 
 ## Roadmap
@@ -145,7 +148,25 @@ Status: Complete.
 * Per-ticker parquet cache with manifest, staleness rules and one retry for transient failures
 * Reruns fully offline with `--offline`
 
-Next: point-in-time membership to remove survivorship bias; faster incremental feature computation (each rebalance currently rebuilds features on the full window, so a 12-year S&P 500 run takes several minutes).
+Next: point-in-time membership to remove survivorship bias.
+
+## Performance
+
+A 12-year, 503-name, 135-rebalance backtest (builtin engine):
+
+| Signal | Before | After |
+|---|---|---|
+| fixed weights | 226 s | 15 s |
+| walk-forward Bayes | 389 s | 31 s |
+| fixed weights via `--engine backtester` | 194 s | 13 s |
+
+Three changes, all exact (results unchanged; max difference vs the old path 6e-14 on real data):
+
+* The cache returns prices as one contiguous block. Concatenating 503 per-ticker series had produced 503 memory blocks, so every pandas op looped column by column.
+* Fixed-weight signals compute features on the trailing `WARMUP_ROWS` (127) rows only. Every factor is a fixed-length trailing window and scoring is per row, so the last row is identical.
+* Walk-forward Bayes keeps running sufficient statistics (`X'X, X'y, y'y, n`) and only absorbs dates whose forward return newly realized. It resets if a window is not a strict extension of the previous one, so a reused signal can never train on rows beyond the current window.
+
+Tests compare both fast paths against the old full-window implementation on data with late listings, delistings and missing days.
 
 ## Disclaimer
 

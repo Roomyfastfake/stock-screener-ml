@@ -109,7 +109,12 @@ class PriceCache:
         self.last_missing = [t for t in tickers if t not in cols]
         if not cols:
             return pd.DataFrame()
-        frame = pd.concat(cols, axis=1).sort_index()
+        joined = pd.concat(cols, axis=1).sort_index()
+        # Concatenating per-ticker series yields one memory block per column, which
+        # makes every later frame op loop column by column (~50x slower for 500
+        # names). Rebuild as a single contiguous float block.
+        frame = pd.DataFrame(joined.to_numpy(dtype=float), index=joined.index,
+                             columns=joined.columns)
         frame = frame.loc[pd.Timestamp(start):]
         if end is not None:
             frame = frame.loc[:pd.Timestamp(end)]

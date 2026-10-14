@@ -19,9 +19,15 @@ GitHub: Roomyfastfake/stock-screener-ml. See README.md for usage and roadmap.
   (data/sp500.csv snapshot, 503 names), `screener/cache.py` (parquet per ticker +
   manifest.json in git-ignored data/cache; full re-download on miss, never splice;
   drops today's bar before 16:30 ET). First real run documented in README.
-- Known limits: survivorship bias (current members only); signal rebuilds features
-  on the full window each rebalance (slow, O(n^2)), so an S&P run takes minutes.
-- Next: step 3 (fundamentals), speed up features, point-in-time membership.
+- Speed fix on branch `perf/fast-signals` (2026-10-15): cache returns a single-block
+  frame; fixed signal uses the trailing `screen.WARMUP_ROWS` rows; walk-forward Bayes
+  is `screen._WalkForwardBayes` with running `bayes.DesignStats`, reset unless the
+  window strictly extends the last one. S&P run: 226s -> 15s fixed, 389s -> 31s Bayes.
+  If an indicator lookback changes, `WARMUP_ROWS` is derived from the constants in
+  screen.py; the equivalence tests fail if it is too short.
+- Known limits: survivorship bias (current members only).
+- Branch stack: feat/costs-turnover -> feat/universe-cache -> perf/fast-signals.
+- Next: step 3 (fundamentals), point-in-time membership.
 - Sibling repo `backtester` (C:\Users\TANUSH\projects\backtester, a sibling folder) is a
   standalone backtesting engine. See Integration plan.
 

@@ -308,6 +308,106 @@ def _factor_subset(n_days: int, seed: int):
 
 
 # --------------------------------------------------------------------------- #
+# fast signals: must equal the full-window reference exactly (up to float order)
+# --------------------------------------------------------------------------- #
+def _gappy_prices(seed=21):
+    """Synthetic panel with late listings, holes and an early delisting."""
+    prices = synthetic.make_prices(n_tickers=14, n_days=700, seed=seed)
+    rng = np.random.default_rng(seed)
+    cols = prices.columns
+    prices.loc[prices.index[:300], cols[0]] = np.nan          # lists late
+    prices.loc[prices.index[:450], cols[1]] = np.nan          # lists later
+    prices.loc[prices.index[500:], cols[2]] = np.nan          # delists
+    holes = rng.random(prices.shape) < 0.01                   # scattered missing days
+    return prices.mask(holes)
+
+
+def _reference_fixed_signal(window, weights=None):
+    weights = screen.DEFAULT_WEIGHTS if weights is None else weights
+    return sc.composite_score(screen.build_features(window), weights).iloc[-1]
+
+
+def _reference_bayes_signal(window, horizon=21, prior_var=1.0, min_obs=100):
+    """The pre-optimisation implementation: refit on the whole window."""
+    factors = screen.build_features(window)
+    try:
+        post = bayes.fit_weights(factors, window, horizon=horizon, prior_var=prior_var)
+    except ValueError:
+        return pd.Series(np.nan, index=window.columns), None
+    if post.n_obs < min_obs:
+        return pd.Series(np.nan, index=window.columns), post
+    return sc.composite_score(factors, post.weights).iloc[-1], post
+
+
+def test_warmup_rows_cover_every_lookback():
+    assert screen.WARMUP_ROWS >= screen.MOM_LOOKBACK + 1
+    assert screen.WARMUP_ROWS >= screen.VOL_WINDOW + 1
+
+
+def test_fast_fixed_signal_matches_full_window():
+    prices = _gappy_prices()
+    sfn = screen.make_signal_fn()
+    for i in range(100, len(prices), 37):
+        w = prices.iloc[:i + 1]
+        pd.testing.assert_series_equal(sfn(w), _reference_fixed_signal(w),
+                                       check_names=False, rtol=0, atol=1e-10)
+
+
+def test_fast_bayes_signal_matches_full_refit():
+    prices = _gappy_prices()
+    sfn = screen.make_bayes_signal_fn(horizon=21, min_obs=100)
+    checked = 0
+    for i in range(150, len(prices), 23):                     # sequential: incremental path
+        w = prices.iloc[:i + 1]
+        ref, post = _reference_bayes_signal(w)
+        fast = sfn(w)
+        pd.testing.assert_series_equal(fast, ref, check_names=False, rtol=0, atol=1e-9)
+        if post is not None and post.n_obs >= 100:
+            assert sfn._stats.n == post.n_obs
+            checked += 1
+    assert checked > 10                                        # real fits, not just warm-up
+
+
+def test_fast_bayes_resets_on_shorter_window():
+    """Reusing an instance on an earlier window must not keep later training rows."""
+    prices = _gappy_prices()
+    sfn = screen.make_bayes_signal_fn(horizon=21, min_obs=100)
+    sfn(prices)                                                # absorb everything
+    short = prices.iloc[:400]
+    pd.testing.assert_series_equal(sfn(short), _reference_bayes_signal(short)[0],
+                                   check_names=False, rtol=0, atol=1e-9)
+    assert sfn._stats.n == _reference_bayes_signal(short)[1].n_obs
+
+
+def test_fast_bayes_resets_on_changed_history():
+    prices = _gappy_prices()
+    sfn = screen.make_bayes_signal_fn(horizon=21, min_obs=100)
+    sfn(prices.iloc[:400])
+    edited = prices.iloc[:450].copy()
+    edited.iloc[100:110] *= 1.5                                # restated past (e.g. new adjustment)
+    pd.testing.assert_series_equal(sfn(edited), _reference_bayes_signal(edited)[0],
+                                   check_names=False, rtol=0, atol=1e-9)
+
+
+def test_design_stats_match_direct_regression():
+    rng = np.random.default_rng(3)
+    X = rng.normal(size=(500, 3))
+    y = X @ np.array([0.3, -0.1, 0.0]) + rng.normal(scale=0.5, size=500)
+    mean, cov, nv = bayes.bayesian_linear_regression(X, y, prior_var=1.0)
+    # Direct residual formula (pre-refactor implementation).
+    beta0 = np.linalg.solve(X.T @ X + np.eye(3), X.T @ y)
+    resid = y - X @ beta0
+    nv_ref = resid @ resid / (500 - 3)
+    cov_ref = np.linalg.inv(X.T @ X / nv_ref + np.eye(3))
+    assert np.isclose(nv, nv_ref, rtol=1e-10)
+    assert np.allclose(mean, cov_ref @ X.T @ y / nv_ref, rtol=1e-10)
+    halves = (bayes.DesignStats.from_arrays(X[:200], y[:200], list("abc"))
+              + bayes.DesignStats.from_arrays(X[200:], y[200:], list("abc")))
+    whole = bayes.DesignStats.from_arrays(X, y, list("abc"))
+    assert np.allclose(halves.xtx, whole.xtx) and halves.n == whole.n
+
+
+# --------------------------------------------------------------------------- #
 # universe + cache (step 4)
 # --------------------------------------------------------------------------- #
 def test_universe_csv_normalises_and_filters():
@@ -401,6 +501,14 @@ def test_cache_refetch_replaces_restated_history():
         out = restated.get(["A"], "2019-06-01", refresh=True)
         expected = _FakeDownloader(["A"], scale=0.5)(["A"], "2019-06-01", None)
         assert np.allclose(out["A"].to_numpy(), expected["A"].to_numpy())
+
+
+def test_cache_returns_single_block_frame():
+    """Per-column blocks made every frame op ~15x slower on 500 names."""
+    with tempfile.TemporaryDirectory() as d:
+        out = cache.PriceCache(d, downloader=_FakeDownloader(list("ABCDE"))).get(
+            list("ABCDE"), "2019-06-01")
+        assert out._mgr.nblocks == 1                  # private, but the thing that matters
 
 
 def test_cache_drops_unknown_tickers():
