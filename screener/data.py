@@ -6,6 +6,8 @@ it installed.
 """
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
 
 
@@ -27,8 +29,15 @@ def download_prices(tickers: list[str], start: str, end: str | None = None,
     data are dropped.
     """
     yf = _require_yfinance()
-    raw = yf.download(tickers, start=start, end=end, auto_adjust=auto_adjust,
-                      progress=False)
+    # yfinance logs every delisted symbol as an error; the cache reports misses itself.
+    log = logging.getLogger("yfinance")
+    level = log.level
+    log.setLevel(logging.CRITICAL)
+    try:
+        raw = yf.download(tickers, start=start, end=end, auto_adjust=auto_adjust,
+                          progress=False)
+    finally:
+        log.setLevel(level)
     # yfinance returns a column MultiIndex (field, ticker) for multiple tickers.
     if isinstance(raw.columns, pd.MultiIndex):
         field = "Close" if "Close" in raw.columns.get_level_values(0) else "Adj Close"

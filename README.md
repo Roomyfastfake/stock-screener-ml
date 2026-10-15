@@ -46,24 +46,42 @@ Implemented:
 * S&P 500 universe (`--universe sp500`, bundled `data/sp500.csv` snapshot) and local parquet price cache
 * Optional `--engine backtester` route to the sibling [backtester](../backtester) package (long-short, weighting schemes, benchmark stats, HTML tearsheet)
 
+* Point-in-time S&P 500 membership (`--universe sp500-pit`): only names that were index members on each signal date are eligible
+* Factor research (`main.py analyze`): rank IC, IC decay, quintile spreads, factor correlation
+
 Not yet implemented:
 
 * Real-data run of the fundamental factors (code and tests done, see Step 3)
-* Point-in-time index membership (see survivorship bias below)
+* Prices for delisted former members (see below)
 
-## First Real-Data Run (2026-10-14)
+## Results: Survivorship Bias Was Most of the Edge
 
-S&P 500, 2015-01-02 to 2026-10-13, top 25 equal weight, monthly, 10 bps per side:
+S&P 500, 2015-01-02 to 2026-10-13, top 25 equal weight, monthly rebalance, 10 bps per side, builtin engine (monthly stats):
 
-| Weights | Engine | CAGR | Vol | Sharpe | Max DD | Beta vs SPY | Alpha (ann.) | Info ratio |
-|---|---|---|---|---|---|---|---|---|
-| fixed default | builtin (monthly stats) | 20.9% | 19.2% | 1.00 | -31% | n/a | n/a | n/a |
-| fixed default | backtester (daily stats, NAV costs) | 18.5% | 21.5% | 0.90 | -42% | 0.95 | 5.1% | 0.33 |
-| walk-forward Bayes | builtin (monthly stats) | 34.1% | 34.9% | 0.85 | -45% | n/a | n/a | n/a |
+| Universe | Weights | CAGR | Vol | Sharpe | Max DD |
+|---|---|---|---|---|---|
+| today's members (`sp500`) | fixed default | 18.7% | 19.2% | 1.00 | -31% |
+| today's members (`sp500`) | walk-forward Bayes | 26.6% | 34.9% | 0.85 | -45% |
+| **point-in-time (`sp500-pit`)** | **fixed default** | **12.6%** | **18.2%** | **0.75** | **-29%** |
+| **point-in-time (`sp500-pit`)** | **walk-forward Bayes** | **9.6%** | **28.9%** | **0.47** | **-44%** |
+| SPY buy and hold | | 13.9% | 14.9% | 0.97 | -34% |
 
-The Bayes book earns more but takes much more risk (vol 35%) for a lower Sharpe than fixed weights.
+Backtesting on *today's* members silently selects the companies that grew enough to stay in the index. Using who was actually a member on each date cuts CAGR by 6 to 17 points, and **neither strategy beats SPY on a risk-adjusted basis**. The Bayes book was the most inflated: it had learned to favour high-volatility names, and volatile survivors are exactly the big winners.
 
-**Treat these as optimistic.** The universe is *today's* S&P 500 members, so every stock that was dropped from the index after doing badly is missing from the history (survivorship bias). The daily drawdown is deeper than the monthly one because monthly stats only see month-end marks.
+The factor research shows why (`main.py analyze`, 21-day forward return entered at the next close, non-overlapping monthly dates):
+
+| Factor | Rank IC (today's members) | t | Rank IC (point-in-time) | t | Q5-Q1 / month (PIT) |
+|---|---|---|---|---|---|
+| momentum | -0.006 | -0.4 | -0.005 | -0.3 | -0.01% |
+| trend | -0.028 | -1.8 | -0.025 | -1.5 | -0.57% |
+| low_vol | -0.028 | -1.5 | -0.007 | -0.3 | -0.56% |
+| reversal | 0.021 | 1.5 | 0.016 | 1.1 | +0.42% |
+
+No price factor has a significant IC in large caps over this period. The low-vol quintile spread (high-vol names winning) was -1.35%/month with t = -2.5 on today's members and shrinks to -0.56% (t = -1.0) point-in-time. Trend and reversal are -0.5 correlated, so they partly double-count the same bet.
+
+**Remaining bias.** Yahoo has no prices for 130 delisted former members (acquired, e.g. CELG, ATVI, XLNX; failed, e.g. SIVB, FRC), so 77% of 2015 members are priced, rising to 99% by 2026. Acquisitions usually exit at a premium and failures at a loss, so the direction of this residual bias is unclear. Membership comes from [fja05680/sp500](https://github.com/fja05680/sp500) (MIT) for former members and Wikipedia's per-company "Date added" for current ones, with ticker renames (FB to META, ANTM to ELV, 26 in all) detected and merged.
+
+The `backtester` engine (daily marking, NAV costs) on today's members gave 18.5% CAGR, Sharpe 0.90, beta 0.95, alpha 5.1%; that alpha is the same survivorship effect.
 
 ## Why Bayesian Scoring?
 
@@ -92,6 +110,11 @@ py -3.14 main.py fetch --universe sp500 --start 2015-01-01          # ~40s first
 py -3.14 main.py backtest --universe sp500 --start 2015-01-01 --offline --top-n 25
 py -3.14 main.py backtest --universe sp500 --sector Energy --offline  # GICS sector filter
 
+# Point-in-time membership (the honest version) and factor research
+py -3.14 main.py fetch --universe sp500-pit --start 2015-01-01
+py -3.14 main.py backtest --universe sp500-pit --start 2015-01-01 --offline --top-n 25
+py -3.14 main.py analyze --universe sp500-pit --start 2015-01-01 --offline --out reports\research
+
 # Through the backtester package, with benchmark stats and a tearsheet
 py -3.14 -m pip install -e ..\backtester
 py -3.14 main.py backtest --universe sp500 --start 2015-01-01 --top-n 25 `
@@ -112,7 +135,7 @@ py -3.14 tests\test_screener.py
 Expected result:
 
 ```text
-51/51 passed
+60/60 passed
 ```
 
 ## Roadmap

@@ -122,6 +122,25 @@ def make_signal_fn(weights: dict[str, float] | None = None,
     return signal_fn
 
 
+def mask_to_members(signal_fn: Callable[[pd.DataFrame], pd.Series],
+                    members: pd.DataFrame) -> Callable[[pd.DataFrame], pd.Series]:
+    """Only names that are index members on the signal date are eligible.
+
+    ``members`` is a ``(dates x tickers)`` bool frame (``universe.membership``).
+    Factors are still computed over every priced name, so cross-sectional
+    z-scores are unchanged; the mask only decides who can be bought.
+    """
+    def masked(price_window: pd.DataFrame) -> pd.Series:
+        scores = signal_fn(price_window)
+        known = members.loc[:price_window.index[-1]]
+        if known.empty:
+            return scores.where(pd.Series(False, index=scores.index))
+        row = known.iloc[-1].reindex(scores.index, fill_value=False).astype(bool)
+        return scores.where(row)
+
+    return masked
+
+
 def make_bayes_signal_fn(prior_var: float = 1.0, horizon: int = 21,
                          shrink: bool = False, min_obs: int = 250,
                          fundamentals: Panel | None = None,

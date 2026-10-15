@@ -76,7 +76,15 @@ class PriceCache:
         tmp.replace(self.manifest_path)
 
     # ------------------------------------------------------------ freshness
+    def _known_missing(self, ticker: str) -> bool:
+        """The downloader returned nothing recently (delisted / acquired symbol)."""
+        meta = self.manifest.get(ticker)
+        return bool(meta and meta.get("missing")
+                    and _now() - pd.Timestamp(meta["fetched_at"]) <= MISSING_RETRY)
+
     def is_fresh(self, ticker: str, start: str, end: str | None) -> bool:
+        if self._known_missing(ticker):
+            return True                      # do not hammer the source for dead symbols
         meta = self.manifest.get(ticker)
         if meta is None or not self._path(ticker).exists():
             return False
@@ -97,8 +105,9 @@ class PriceCache:
         """
         tickers = list(dict.fromkeys(tickers))
         if offline:
-            stale = [t for t in tickers if t not in self.manifest or not self._path(t).exists()
-                     or pd.Timestamp(self.manifest[t]["start"]) > pd.Timestamp(start)]
+            stale = [t for t in tickers if not self.manifest.get(t, {}).get("missing")
+                     and (t not in self.manifest or not self._path(t).exists()
+                          or pd.Timestamp(self.manifest[t]["start"]) > pd.Timestamp(start))]
             if stale:
                 raise CacheMiss(f"{len(stale)} tickers not cached from {start}, e.g. {stale[:5]}")
         else:
@@ -130,7 +139,11 @@ class PriceCache:
             chunk = tickers[i:i + self.chunk_size]
             failed = self._store(download(chunk, start, None), chunk, start, cutoff)
             if failed:                       # one retry: yfinance drops names transiently
-                self._store(download(failed, start, None), failed, start, cutoff)
+                failed = self._store(download(failed, start, None), failed, start, cutoff)
+            for t in failed:                 # remember dead symbols; retried after MISSING_RETRY
+                if not self._path(t).exists():
+                    self.manifest[t] = {"missing": True,
+                                        "fetched_at": _now().isoformat(timespec="seconds")}
             self._save_manifest()            # persist progress per chunk
 
     def _store(self, raw: pd.DataFrame, chunk: list[str], start: str,
@@ -146,6 +159,7 @@ class PriceCache:
         return failed
 
 
+MISSING_RETRY = pd.Timedelta(days=30)
 MARKET_TZ = "America/New_York"
 CLOSE_BUFFER = pd.Timedelta(hours=16, minutes=30)   # 16:00 close + time for final prints
 

@@ -34,8 +34,27 @@ from screener import universe
 
 def _tickers(args) -> list[str]:
     if getattr(args, "universe", None):
-        return universe.resolve(args.universe, sector=args.sector)
+        return universe.resolve(args.universe, sector=args.sector,
+                                start=args.start, end=args.end)
     return [universe.to_yahoo(t) for t in (getattr(args, "tickers", None) or [])]
+
+
+def _is_pit(args) -> bool:
+    return (getattr(args, "universe", None) or "").lower() == "sp500-pit"
+
+
+def _members(args, prices: pd.DataFrame) -> pd.DataFrame | None:
+    """Point-in-time membership mask for ``--universe sp500-pit``, else None."""
+    if not _is_pit(args):
+        return None
+    members = universe.membership(prices.index).reindex(columns=prices.columns,
+                                                        fill_value=False)
+    n_mem = universe.membership(prices.index).sum(axis=1)
+    priced = (members & prices.notna()).sum(axis=1)
+    cov = (priced / n_mem).resample("YE").mean()
+    print("members with price data: " + ", ".join(
+        f"{d.year} {v:.0%}" for d, v in cov.items()))
+    return members
 
 
 def _load_prices(args) -> pd.DataFrame:
@@ -88,6 +107,10 @@ def cmd_rank(args) -> None:
     fund = _fundamentals(args, prices)
     table = screen.rank_universe(prices, weights=_weights(args, prices, fund),
                                  fundamentals=fund)
+    members = _members(args, prices)
+    if members is not None:                       # only current members are investable
+        table = table[members.iloc[-1].reindex(table.index, fill_value=False).astype(bool)]
+        table["rank"] = range(1, len(table) + 1)
     print(table.head(args.top_n).round(3).to_string())
 
 
@@ -102,6 +125,9 @@ def cmd_backtest(args) -> None:
     else:
         signal_fn = screen.make_signal_fn(weights=_weights(args, prices, fund),
                                           fundamentals=fund)
+    members = _members(args, prices)
+    if members is not None:
+        signal_fn = screen.mask_to_members(signal_fn, members)
     if getattr(args, "engine", "builtin") == "backtester":
         result = _run_external(args, prices, signal_fn)
     else:
@@ -145,6 +171,9 @@ def cmd_analyze(args) -> None:
     prices = _load_prices(args)
     fund = _fundamentals(args, prices)
     factors = screen.build_features(prices, fundamentals=fund)
+    members = _members(args, prices)
+    if members is not None:                       # research only on investable names
+        factors = {k: f.where(members) for k, f in factors.items()}
     rep = research.report(factors, prices, horizon=args.horizon)
     pd.set_option("display.width", 140)
     print(f"\n== Rank IC, {args.horizon}d forward return from next close "

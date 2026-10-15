@@ -34,11 +34,20 @@ GitHub: Roomyfastfake/stock-screener-ml. See README.md for usage and roadmap.
 - P/E deliberately deferred: as-reported EPS vs split-adjusted prices breaks at splits.
 - Before reporting any fundamentals backtest, run `check-fundamentals` and report the
   pass rate (TTM from quarters must equal 10-K FY).
-- Known limits: survivorship bias (current members only).
+- Branch `feat/ci-research` (2026-10-15): GitHub Actions CI; `screener/research.py`
+  (rank IC, decay, quintiles, factor correlation; next-close timing); point-in-time
+  membership `--universe sp500-pit` (data/sp500_history.csv from fja05680/sp500, MIT,
+  plus Wikipedia date_added; renames detected by `universe._renamed_predecessors`);
+  `screen.mask_to_members`; cache remembers dead symbols for 30 days; builtin stats
+  gain true `cagr`.
+- Headline (README "Results"): on point-in-time membership, fixed weights 12.6% CAGR
+  Sharpe 0.75, Bayes 9.6% / 0.47, SPY 13.9% / 0.97. No price factor has significant IC.
+  Report PIT numbers as the primary result; `sp500` (today's members) is biased.
+- Known limits: 130 delisted former members have no Yahoo prices (77% of 2015 members
+  priced, 99% by 2026).
 - Branch stack: feat/costs-turnover -> feat/universe-cache -> perf/fast-signals
-  -> feat/fundamentals.
-- Next: real fundamentals run once SEC_USER_AGENT is set; P/E with split handling;
-  point-in-time membership.
+  -> feat/fundamentals -> feat/ci-research.
+- Next: real fundamentals run once SEC_USER_AGENT is set; P/E with split handling.
 - Sibling repo `backtester` (C:\Users\TANUSH\projects\backtester, a sibling folder) is a
   standalone backtesting engine. See Integration plan.
 

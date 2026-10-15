@@ -183,6 +183,8 @@ def test_backtest_costs_and_turnover():
     assert np.allclose(paid.period_returns, [0.10 - 0.005, 0.20 - 0.010])
     assert np.allclose(paid.gross_returns, free.period_returns)
     assert np.isclose(paid.stats["avg_turnover"], 0.75)
+    # Two monthly periods: CAGR = (1.095 * 1.19) ** (12 / 2) - 1.
+    assert np.isclose(paid.stats["cagr"], (1.095 * 1.19) ** 6 - 1)
 
 
 def test_backtest_costs_reduce_return_monotonically():
@@ -706,6 +708,69 @@ def test_universe_csv_normalises_and_filters():
                         "JPM,JPMorgan,Financials\n", "utf-8")
         assert universe.load_universe(path) == ["BRK-B", "AAPL", "JPM"]
         assert universe.load_universe(path, sector="financials") == ["BRK-B", "JPM"]
+
+
+def _membership_fixture(d):
+    snap = pathlib.Path(d) / "snap.csv"
+    hist = pathlib.Path(d) / "hist.csv"
+    # META joined as FB in 2013 and was renamed 2022-06-09; NEW was added 2026-09-21
+    # (after the history file's last update), replacing OLD; GONE left in 2018.
+    snap.write_text("ticker,name,sector,cik,date_added\n"
+                    "META,Meta,Comm,1,2013-12-23\nAAPL,Apple,IT,2,1982-11-30\n"
+                    "NEW,New Co,IT,3,2026-09-21\n", "utf-8")
+    hist.write_text("# comment\nticker,start_date,end_date\n"
+                    "FB,2013-12-23,2022-06-09\nMETA,2022-06-09,\nAAPL,1996-01-02,\n"
+                    "OLD,2010-01-04,\nGONE,2005-01-03,2018-03-19\nXFB,2001-01-02,2022-06-09\n",
+                    "utf-8")
+    return snap, hist
+
+
+def test_membership_intervals_handle_renames_and_late_changes():
+    with tempfile.TemporaryDirectory() as d:
+        iv = universe.membership_intervals(*_membership_fixture(d))
+        by = {t: g for t, g in iv.groupby("ticker")}
+        assert "FB" not in by                                  # rename: covered by META
+        assert "XFB" in by                                     # unrelated name, same end date
+        assert by["META"]["start"].iloc[0] == pd.Timestamp("2013-12-23")
+        assert by["OLD"]["end"].iloc[0] == pd.Timestamp("2026-09-21")
+        assert by["GONE"]["end"].iloc[0] == pd.Timestamp("2018-03-19")
+        idx = pd.bdate_range("2018-03-15", "2018-03-21")
+        m = universe.membership(idx, iv)
+        assert m.loc["2018-03-16", "GONE"] and not m.loc["2018-03-19", "GONE"]   # end exclusive
+        assert m.loc["2018-03-19", "META"]
+
+
+def test_bundled_membership_is_sane():
+    idx = pd.bdate_range("2015-01-01", "2026-10-01")
+    m = universe.membership(idx)
+    counts = m.sum(axis=1)
+    assert counts.between(490, 515).all(), (counts.min(), counts.max())
+    assert m.loc["2016-06-01", "META"] and "FB" not in m.columns or not m["FB"].any()
+    assert len(universe.members_between("2015-01-01", "2026-10-01")) > 700
+
+
+def test_mask_to_members():
+    prices = synthetic.make_prices(n_tickers=6, n_days=300, seed=0)
+    members = pd.DataFrame(True, index=prices.index, columns=prices.columns)
+    members.loc[prices.index[200]:, "T01"] = False             # T01 leaves the index
+    sfn = screen.mask_to_members(screen.make_signal_fn(), members)
+    before, after = sfn(prices.iloc[:200]), sfn(prices.iloc[:250])
+    assert before.notna()["T01"] and np.isnan(after["T01"])
+    assert after.drop("T01").notna().all()
+    early = screen.mask_to_members(screen.make_signal_fn(), members.iloc[10:])
+    assert early(prices.iloc[:5]).isna().all()                 # before membership data: nothing
+
+
+def test_cache_remembers_dead_symbols():
+    with tempfile.TemporaryDirectory() as d:
+        fake = _FakeDownloader(["A"])
+        cache.PriceCache(d, downloader=fake).get(["A", "DEAD"], "2019-06-01")
+        n = len(fake.calls)                                    # initial + one retry for DEAD
+        pc = cache.PriceCache(d, downloader=fake)
+        out = pc.get(["A", "DEAD"], "2019-06-01")
+        assert len(fake.calls) == n and pc.last_missing == ["DEAD"]
+        off = cache.PriceCache(d).get(["A", "DEAD"], "2019-06-01", offline=True)
+        assert list(off.columns) == ["A"] and list(out.columns) == ["A"]
 
 
 def test_bundled_sp500_snapshot():
