@@ -196,6 +196,62 @@ def cmd_analyze(args) -> None:
         print(f"\ntables written to {out}")
 
 
+def cmd_report(args) -> None:
+    """Point-in-time vs survivorship backtests + factor research -> one HTML page."""
+    import pathlib
+    from screener import report, research
+    args.universe = "sp500-pit"
+    prices = _load_prices(args)
+    members = _members(args, prices)
+    today = [t for t in universe.load_sp500() if t in prices.columns]
+    pc = cache.PriceCache(args.cache_dir, max_age_days=args.max_age_days)
+    spy = pc.get([args.benchmark or "SPY"], start=args.start, end=args.end,
+                 offline=args.offline).iloc[:, 0]
+
+    runs = {}
+    specs = [("Point-in-time, fixed weights", False, True),
+             ("Point-in-time, walk-forward Bayes", True, True),
+             ("Today's members, fixed weights (biased)", False, False),
+             ("Today's members, walk-forward Bayes (biased)", True, False)]
+    for label, use_bayes, pit in specs:
+        px = prices if pit else prices[today]
+        sfn = (screen.make_bayes_signal_fn(horizon=args.horizon, factors=args.factors)
+               if use_bayes else screen.make_signal_fn(factors=args.factors))
+        if pit:
+            sfn = screen.mask_to_members(sfn, members)
+        print(f"backtest: {label}")
+        runs[label] = bt.backtest(px, sfn, top_n=args.top_n, cost_bps=args.cost_bps)
+
+    factors = screen.build_features(prices, factors=args.factors)
+    factors = {k: f.where(members) for k, f in factors.items()}
+    rep = research.report(factors, prices, horizon=args.horizon)
+
+    n_mem = universe.membership(prices.index).sum(axis=1)
+    cov = ((members & prices.notna()).sum(axis=1) / n_mem)
+    coverage = (f"Price coverage of index members: {cov.iloc[0]:.0%} at the start, "
+                f"{cov.iloc[-1]:.0%} at the end. Yahoo has no prices for delisted former "
+                f"members (acquired or failed), so some survivorship bias remains.")
+    notes = [
+        "Universe: S&P 500 members on each signal date, from fja05680/sp500 (former members) "
+        "and Wikipedia's per-company date added (current members), with ticker renames merged.",
+        f"Top {args.top_n} names by composite score, equal weight, rebalanced monthly; "
+        f"{args.cost_bps:g} bps per side on traded notional.",
+        "Walk-forward Bayes refits factor weights at every rebalance on data realized "
+        "before that date only.",
+        "'Today's members' rows backtest the current constituents over the whole period, "
+        "which silently keeps only the companies that survived and grew. They are shown to "
+        "measure that bias, not as results.",
+    ]
+    period = f"{prices.index[0].date()} to {prices.index[-1].date()}"
+    page = report.build("Do simple price factors beat the S&P 500?",
+                        f"Point-in-time S&P 500, {period}", runs, spy, rep,
+                        primary=[s[0] for s in specs[:2]], coverage=coverage, notes=notes)
+    out = pathlib.Path(args.out or "reports/research_report.html")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(page, "utf-8")
+    print(f"report written to {out}")
+
+
 def cmd_check_fundamentals(args) -> None:
     """Fetch/cache SEC fundamentals for the universe and run the TTM validation gate."""
     from screener import fundamentals as fu
@@ -305,6 +361,10 @@ def build_parser() -> argparse.ArgumentParser:
                              help="factor research: IC, decay, quintiles, correlation")
     analyze.add_argument("--out", default=None, help="directory for CSV tables")
     analyze.set_defaults(func=cmd_analyze)
+    rpt = sub.add_parser("report", parents=[common],
+                         help="HTML research report: point-in-time vs biased backtests, factor IC")
+    rpt.add_argument("--out", default=None, help="output HTML path")
+    rpt.set_defaults(func=cmd_report)
     sub.add_parser("check-fundamentals", parents=[common],
                    help="fetch SEC fundamentals and run the TTM validation gate"
                    ).set_defaults(func=cmd_check_fundamentals)

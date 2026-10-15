@@ -733,6 +733,22 @@ def test_factor_correlation_identities():
     assert np.allclose(corr.to_numpy(), corr.to_numpy().T)
 
 
+def test_report_builds_valid_page():
+    from screener import report
+    prices = synthetic.make_prices(n_tickers=20, n_days=700, seed=0)
+    runs = {"A": bt.backtest(prices, screen.make_signal_fn(), top_n=5, cost_bps=10),
+            "B": bt.backtest(prices, screen.make_bayes_signal_fn(min_obs=100), top_n=5)}
+    bench = prices.mean(axis=1)
+    page = report.build("T <x>", "sub", runs, bench,
+                        research.report(screen.build_features(prices), prices), ["A", "B"],
+                        notes=["n1"])
+    assert page.startswith("<!doctype html>") and page.count("<svg") == 2
+    assert "T &lt;x&gt;" in page and "SPY buy and hold" in page and "n1" in page
+    curve, stats = report.benchmark_curve(bench, runs["A"])
+    assert curve.iloc[0] == 1.0 and len(curve) == len(runs["A"].period_returns) + 1
+    assert np.isfinite(stats["sharpe"])
+
+
 def test_cli_analyze_runs_offline():
     args = cli.build_parser().parse_args(["analyze", "--synthetic"])
     cli.cmd_analyze(args)
