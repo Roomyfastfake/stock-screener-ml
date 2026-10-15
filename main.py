@@ -25,11 +25,7 @@ import argparse
 import pandas as pd
 
 from screener import backtest as bt
-from screener import bayes
-from screener import cache
-from screener import screen
-from screener import synthetic
-from screener import universe
+from screener import bayes, cache, screen, synthetic, universe
 
 
 def _tickers(args) -> list[str]:
@@ -199,6 +195,7 @@ def cmd_analyze(args) -> None:
 def cmd_report(args) -> None:
     """Point-in-time vs survivorship backtests + factor research -> one HTML page."""
     import pathlib
+
     from screener import report, research
     args.universe = "sp500-pit"
     prices = _load_prices(args)

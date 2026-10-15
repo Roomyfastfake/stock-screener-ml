@@ -29,7 +29,8 @@ main{max-width:920px;margin:0 auto;padding:32px 16px 64px}
 h1{font-size:26px;margin:0 0 4px}h2{font-size:18px;margin:36px 0 10px}
 .sub{color:var(--muted);margin:0 0 20px}
 .lead{font-size:17px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:12px 0;overflow-x:auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;
+margin:12px 0;overflow-x:auto}
 table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
 th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
 th:first-child,td:first-child{text-align:left}th{color:var(--muted);font-weight:600}
@@ -89,11 +90,15 @@ def line_chart(series: dict[str, pd.Series], log: bool = True, pct: bool = False
     if log:
         ticks = [2.0 ** k for k in range(math.floor(math.log2(lo)), math.ceil(math.log2(hi)) + 1)]
         ticks = [t for t in ticks if lo * 0.98 <= t <= hi * 1.02] or [lo, hi]
-        label = lambda t: f"{t:g}x"
+        fmt = "{:g}x"
     else:
         step = (hi - lo) / 4 or 1.0
         ticks = [lo + i * step for i in range(5)]
-        label = (lambda t: f"{t:.0%}") if pct else (lambda t: f"{t:.2f}")
+        fmt = "{:.0%}" if pct else "{:.2f}"
+
+    def label(t: float) -> str:
+        return fmt.format(t)
+
     for t in ticks:
         y = py(t)
         parts.append(f'<line class="grid" x1="{pad_l}" x2="{width - pad_r}" y1="{y:.1f}" y2="{y:.1f}"/>'
@@ -102,7 +107,7 @@ def line_chart(series: dict[str, pd.Series], log: bool = True, pct: bool = False
         x = px(pd.Timestamp(year=year, month=1, day=1))
         if year % 2 == 0 or t1.year - t0.year <= 6:
             parts.append(f'<text x="{x:.1f}" y="{height - 6}" text-anchor="middle">{year}</text>')
-    for i, (name, s) in enumerate(data.items()):
+    for i, s in enumerate(data.values()):
         pts = " ".join(f"{px(t):.1f},{py(float(v)):.1f}" for t, v in s.items())
         parts.append(f'<polyline fill="none" stroke="{PALETTE[i % len(PALETTE)]}" '
                      f'stroke-width="1.8" points="{pts}"/>')

@@ -1,0 +1,7 @@
+line-length = 120
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "W", "B", "I"]
+# zip() here always pairs columns of one aligned DataFrame, so strict= adds noise.
+ignore = ["B905"]

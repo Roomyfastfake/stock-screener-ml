@@ -17,15 +17,10 @@ import pandas as pd
 
 import main as cli
 from screener import backtest as bt
-from screener import bayes
-from screener import cache
+from screener import bayes, cache, research, screen, synthetic, universe
 from screener import fundamentals as fu
 from screener import indicators as ind
-from screener import research
 from screener import score as sc
-from screener import screen
-from screener import synthetic
-from screener import universe
 
 
 # --------------------------------------------------------------------------- #
