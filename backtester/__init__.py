@@ -1,8 +1,14 @@
 """Reusable cross-sectional backtesting engine (pandas/numpy only)."""
 from .engine import BacktestResult, SignalFn, backtest
-from .research import (bootstrap_sharpe_ci, deflated_sharpe, expected_max_sharpe,
-                       probabilistic_sharpe, walk_forward, walk_forward_splits)
 from .report import tearsheet
+from .research import (
+                       bootstrap_sharpe_ci,
+                       deflated_sharpe,
+                       expected_max_sharpe,
+                       probabilistic_sharpe,
+                       walk_forward,
+                       walk_forward_splits,
+)
 from .schedule import rebalance_dates
 from .stats import benchmark_stats, perf_stats
 

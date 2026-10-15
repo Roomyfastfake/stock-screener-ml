@@ -392,6 +392,7 @@ def test_expected_max_sharpe_hand_checked():
 
 def test_tearsheet_writes_html():
     import tempfile
+
     from backtester import report
     prices = synthetic.make_prices(n_tickers=10, n_days=400, seed=6)
     res = bt.backtest(prices, synthetic.momentum_signal(), top_n=3,

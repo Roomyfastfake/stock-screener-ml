@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 from . import stats as st
-from .engine import BacktestResult, SignalFn, backtest
+from .engine import SignalFn, backtest
 
 EULER_GAMMA = 0.5772156649015329
 _N = NormalDist()
