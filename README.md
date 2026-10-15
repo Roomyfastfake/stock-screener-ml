@@ -1,5 +1,7 @@
 # stock-screener-ml
 
+[![tests](https://github.com/Roomyfastfake/stock-screener-ml/actions/workflows/tests.yml/badge.svg)](https://github.com/Roomyfastfake/stock-screener-ml/actions/workflows/tests.yml)
+
 A tested Python stock screener that ranks stocks using technical indicators, cross-sectional factor scoring, a simple backtest engine, and an initial Bayesian factor-weighting layer.
 
 The goal of this project is not to claim a profitable trading strategy. The goal is to build a clean, testable research framework while avoiding common mistakes such as lookahead bias, same-close execution assumptions, and in-sample backtest claims.

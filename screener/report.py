@@ -145,9 +145,32 @@ def _curve(result: bt.BacktestResult) -> pd.Series:
     return pd.concat([start, result.equity_curve])
 
 
+def _sweep_section(swp) -> list[str]:
+    t = swp.table.copy()
+    t = t.rename(columns={"cagr": "CAGR", "ann_vol": "Vol", "sharpe": "Sharpe",
+                          "max_drawdown": "Max DD", "excess_vs_benchmark": "vs SPY / yr",
+                          "info_ratio": "Info ratio"})
+    t.index.name = "Variant"
+    b = swp.benchmark_stats
+    verdict = ("consistent with luck" if swp.dsr < 0.95
+               else "unlikely to be luck alone")
+    return [
+        "<h2>Is any variant better than luck?</h2>",
+        f"<p>{swp.n_trials} variants (factor sets x portfolio sizes) on point-in-time "
+        f"membership, all starting on the same date, compared with SPY on the same dates "
+        f"(SPY: {_fmt(b['cagr'])} a year, Sharpe {_fmt(b['sharpe'], 'num')}).</p>",
+        f"<p class='lead'>The best variant, <b>{html.escape(swp.best)}</b>, has a "
+        f"{swp.psr:.0%} probability of a positive true active return on its own. Deflated for "
+        f"the {swp.n_trials} trials (Bailey and Lopez de Prado 2014) that becomes "
+        f"<b>{swp.dsr:.2f}</b>: the outperformance is {verdict}.</p>",
+        _table(t, {"CAGR": "pct", "Vol": "pct", "Max DD": "pct", "vs SPY / yr": "pct",
+                   "Sharpe": "num", "Info ratio": "num"}, highlight={swp.best}),
+    ]
+
+
 def build(title: str, subtitle: str, results: dict[str, bt.BacktestResult],
           benchmark: pd.Series, research: dict, primary: list[str],
-          coverage: str = "", notes: list[str] | None = None) -> str:
+          coverage: str = "", notes: list[str] | None = None, sweep=None) -> str:
     """Assemble the report. ``results`` maps label -> builtin BacktestResult."""
     first = results[primary[0]]
     bench_curve, bench_stats = benchmark_curve(benchmark, first)
@@ -206,6 +229,7 @@ def build(title: str, subtitle: str, results: dict[str, bt.BacktestResult],
         "<p class='note'>Average cross-sectional rank correlation. Highly correlated factors are "
         "the same bet counted twice.</p>",
         heatmap(research["correlation"]),
+        *(_sweep_section(sweep) if sweep is not None else []),
         "<h2>Method and caveats</h2><ul>",
         *[f"<li>{n}</li>" for n in (notes or [])],
         f"<li>{html.escape(coverage)}</li>" if coverage else "",

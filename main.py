@@ -196,14 +196,12 @@ def cmd_report(args) -> None:
     """Point-in-time vs survivorship backtests + factor research -> one HTML page."""
     import pathlib
 
-    from screener import report, research
+    from screener import report, research, sweep
     args.universe = "sp500-pit"
     prices = _load_prices(args)
     members = _members(args, prices)
     today = [t for t in universe.load_sp500() if t in prices.columns]
-    pc = cache.PriceCache(args.cache_dir, max_age_days=args.max_age_days)
-    spy = pc.get([args.benchmark or "SPY"], start=args.start, end=args.end,
-                 offline=args.offline).iloc[:, 0]
+    spy = _benchmark(args)
 
     runs = {}
     specs = [("Point-in-time, fixed weights", False, True),
@@ -219,9 +217,12 @@ def cmd_report(args) -> None:
         print(f"backtest: {label}")
         runs[label] = bt.backtest(px, sfn, top_n=args.top_n, cost_bps=args.cost_bps)
 
-    factors = screen.build_features(prices, factors=args.factors)
+    print("factor research (all registered factors)")
+    factors = screen.build_features(prices, factors=args.factors or list(screen.FACTORS))
     factors = {k: f.where(members) for k, f in factors.items()}
     rep = research.report(factors, prices, horizon=args.horizon)
+    print("variant sweep")
+    swp = sweep.run(prices, spy, members, cost_bps=args.cost_bps)
 
     n_mem = universe.membership(prices.index).sum(axis=1)
     cov = ((members & prices.notna()).sum(axis=1) / n_mem)
@@ -242,64 +243,44 @@ def cmd_report(args) -> None:
     period = f"{prices.index[0].date()} to {prices.index[-1].date()}"
     page = report.build("Do simple price factors beat the S&P 500?",
                         f"Point-in-time S&P 500, {period}", runs, spy, rep,
-                        primary=[s[0] for s in specs[:2]], coverage=coverage, notes=notes)
+                        primary=[s[0] for s in specs[:2]], coverage=coverage, notes=notes,
+                        sweep=swp)
     out = pathlib.Path(args.out or "reports/research_report.html")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(page, "utf-8")
     print(f"report written to {out}")
 
 
-SWEEP_FACTOR_SETS = {
-    "default": None, "momentum": ["momentum"], "mom_12_1": ["mom_12_1"],
-    "high_52w": ["high_52w"], "trend": ["trend"], "low_vol": ["low_vol"],
-    "reversal": ["reversal"], "mom_12_1+reversal": ["mom_12_1", "reversal"],
-}
-SWEEP_TOP_N = (10, 25, 50)
+def _benchmark(args) -> pd.Series:
+    pc = cache.PriceCache(args.cache_dir, max_age_days=args.max_age_days)
+    return pc.get([args.benchmark or "SPY"], start=args.start, end=args.end,
+                  offline=args.offline).iloc[:, 0]
+
+
+def _print_progress(key: str, row: dict) -> None:
+    print(f"  {key:<28} cagr {row['cagr']:6.1%}  sharpe {row['sharpe']:5.2f}  "
+          f"IR {row['info_ratio']:5.2f}")
 
 
 def cmd_sweep(args) -> None:
     """Grid of variants on point-in-time membership, judged with the deflated Sharpe."""
-    from screener import report, research
-    from screener import score as sc
+    from screener import sweep
     args.universe = "sp500-pit"
     prices = _load_prices(args)
-    members = _members(args, prices)
-    spy = cache.PriceCache(args.cache_dir).get([args.benchmark or "SPY"], start=args.start,
-                                               end=args.end, offline=args.offline).iloc[:, 0]
-    # Every variant starts on the same date: the longest factor warm-up of the grid.
-    warm = max(screen.warmup_rows(f) for f in SWEEP_FACTOR_SETS.values())
-    rows, active = {}, {}
-    spy_stats = None
-    for name, factors in SWEEP_FACTOR_SETS.items():
-        feats = screen.build_features(prices, factors=factors)
-        comp = sc.composite_score(feats, screen.default_weights(factors=factors)).where(members)
-        sfn = screen.make_panel_signal_fn(comp)
-        for n in SWEEP_TOP_N:
-            res = bt.backtest(prices, sfn, top_n=n, cost_bps=args.cost_bps, min_history=warm)
-            curve, spy_stats = report.benchmark_curve(spy, res)
-            spy_r = curve.pct_change().dropna()
-            key = f"{name}, top {n}"
-            active[key] = res.period_returns - spy_r.reindex(res.period_returns.index)
-            ir = active[key].mean() / active[key].std(ddof=1) * 12 ** 0.5
-            rows[key] = {**{k: res.stats[k] for k in ("cagr", "ann_vol", "sharpe", "max_drawdown")},
-                         "excess_vs_spy": res.stats["cagr"] - spy_stats["cagr"], "info_ratio": ir}
-            print(f"  {key:<28} cagr {res.stats['cagr']:6.1%}  sharpe {res.stats['sharpe']:5.2f}  IR {ir:5.2f}")
-    table = pd.DataFrame(rows).T.sort_values("info_ratio", ascending=False)
-    best = table.index[0]
-    trial_ir = [a.mean() / a.std(ddof=1) for a in active.values()]
-    dsr = research.deflated_sharpe(active[best], trial_ir)
-    psr = research.probabilistic_sharpe(active[best], 0.0)
+    res = sweep.run(prices, _benchmark(args), _members(args, prices), cost_bps=args.cost_bps,
+                    progress=_print_progress)
     pd.set_option("display.width", 160)
-    print(f"\n== {len(trial_ir)} variants, point-in-time S&P 500, common start, ranked by "
+    print(f"\n== {res.n_trials} variants, point-in-time S&P 500, common start, ranked by "
           f"information ratio vs SPY ==")
-    print(table.round(3).to_string())
-    print(f"\nSPY on the same dates: cagr {spy_stats['cagr']:.1%}, sharpe {spy_stats['sharpe']:.2f}")
-    print(f"Best variant vs SPY: {best} (info ratio {table.loc[best, 'info_ratio']:.2f})")
-    print(f"  P[true active return > 0], this variant alone:        {psr:.2f}")
-    print(f"  deflated, given {len(trial_ir)} variants were tried:         {dsr:.2f}")
+    print(res.table.round(3).to_string())
+    b = res.benchmark_stats
+    print(f"\nSPY on the same dates: cagr {b['cagr']:.1%}, sharpe {b['sharpe']:.2f}")
+    print(f"Best variant vs SPY: {res.best} (info ratio {res.table.loc[res.best, 'info_ratio']:.2f})")
+    print(f"  P[true active return > 0], this variant alone:        {res.psr:.2f}")
+    print(f"  deflated, given {res.n_trials} variants were tried:         {res.dsr:.2f}")
     print("  Below 0.95 the outperformance is consistent with luck.")
     if args.out:
-        table.to_csv(args.out)
+        res.table.to_csv(args.out)
         print(f"table written to {args.out}")
 
 

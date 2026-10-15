@@ -739,6 +739,14 @@ def test_report_builds_valid_page():
                         notes=["n1"])
     assert page.startswith("<!doctype html>") and page.count("<svg") == 2
     assert "T &lt;x&gt;" in page and "SPY buy and hold" in page and "n1" in page
+    from screener import sweep
+    swp = sweep.run(prices, bench, factor_sets={"default": None, "momentum": ["momentum"]},
+                    top_ns=(3, 5))
+    assert swp.n_trials == 4 and swp.best == swp.table.index[0]
+    assert 0 <= swp.dsr <= swp.psr <= 1 or np.isnan(swp.dsr)
+    page2 = report.build("T", "s", runs, bench,
+                         research.report(screen.build_features(prices), prices), ["A"], sweep=swp)
+    assert "better than luck" in page2 and swp.best in page2
     curve, stats = report.benchmark_curve(bench, runs["A"])
     assert curve.iloc[0] == 1.0 and len(curve) == len(runs["A"].period_returns) + 1
     assert np.isfinite(stats["sharpe"])
