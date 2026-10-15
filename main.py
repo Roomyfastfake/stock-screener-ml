@@ -93,20 +93,20 @@ def _fundamentals(args, prices: pd.DataFrame):
 
 def _weights(args, prices: pd.DataFrame, fund=None) -> dict[str, float]:
     if getattr(args, "bayes", False):
-        factors = screen.build_features(prices, fundamentals=fund)
+        factors = screen.build_features(prices, fundamentals=fund, factors=args.factors)
         scorer = bayes.BayesianScorer(prior_var=args.prior_var, horizon=args.horizon)
         scorer.fit(factors, prices)
         print("learned weights:", {k: round(float(v), 4) for k, v in scorer.weights.items()})
         print("signal/noise   :", {k: round(float(v), 2) for k, v in scorer.posterior.signal_to_noise.items()})
         return scorer.weights
-    return screen.default_weights(fund)
+    return screen.default_weights(fund, args.factors)
 
 
 def cmd_rank(args) -> None:
     prices = _load_prices(args)
     fund = _fundamentals(args, prices)
     table = screen.rank_universe(prices, weights=_weights(args, prices, fund),
-                                 fundamentals=fund)
+                                 fundamentals=fund, factors=args.factors)
     members = _members(args, prices)
     if members is not None:                       # only current members are investable
         table = table[members.iloc[-1].reindex(table.index, fill_value=False).astype(bool)]
@@ -121,10 +121,11 @@ def cmd_backtest(args) -> None:
         # Walk-forward: weights are refit on each rebalance window (past only),
         # so this is genuinely out-of-sample -- no full-sample lookahead.
         signal_fn = screen.make_bayes_signal_fn(prior_var=args.prior_var,
-                                                horizon=args.horizon, fundamentals=fund)
+                                                horizon=args.horizon, fundamentals=fund,
+                                                factors=args.factors)
     else:
         signal_fn = screen.make_signal_fn(weights=_weights(args, prices, fund),
-                                          fundamentals=fund)
+                                          fundamentals=fund, factors=args.factors)
     members = _members(args, prices)
     if members is not None:
         signal_fn = screen.mask_to_members(signal_fn, members)
@@ -170,7 +171,7 @@ def cmd_analyze(args) -> None:
     from screener import research
     prices = _load_prices(args)
     fund = _fundamentals(args, prices)
-    factors = screen.build_features(prices, fundamentals=fund)
+    factors = screen.build_features(prices, fundamentals=fund, factors=args.factors)
     members = _members(args, prices)
     if members is not None:                       # research only on investable names
         factors = {k: f.where(members) for k, f in factors.items()}
@@ -235,6 +236,15 @@ def cmd_demo(args) -> None:
     cmd_backtest(args)
 
 
+def _factor_list(text: str) -> list[str]:
+    names = [f.strip() for f in text.split(",") if f.strip()]
+    unknown = [f for f in names if f not in screen.FACTORS]
+    if unknown:
+        raise argparse.ArgumentTypeError(
+            f"unknown factors {unknown}; choose from {sorted(screen.FACTORS)}")
+    return names
+
+
 def build_parser() -> argparse.ArgumentParser:
     # Shared options live on a parent parser so they may appear *after* the
     # subcommand (e.g. `main.py backtest --bayes --top-n 5`).
@@ -273,6 +283,9 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--cost-model", dest="cost_model", choices=["additive", "nav"],
                         default="additive", help="additive matches the builtin engine exactly")
     common.add_argument("--tearsheet", default=None, help="write an HTML tearsheet to this path")
+    common.add_argument("--factors", type=_factor_list, default=None,
+                        help="comma list of price factors (default momentum,trend,low_vol,"
+                             "reversal; also mom_12_1, high_52w)")
     common.add_argument("--fundamentals", action="store_true",
                         help="add point-in-time SEC factors (roe, rev_growth); needs SEC_USER_AGENT "
                              "unless cached")

@@ -373,6 +373,46 @@ def test_fast_bayes_signal_matches_full_refit():
     assert checked > 10                                        # real fits, not just warm-up
 
 
+def test_factor_registry_long_lookbacks_stay_exact():
+    """All factors, incl. 252-day ones: the tail path must equal the full window."""
+    prices = _gappy_prices()
+    names = list(screen.FACTORS)
+    assert screen.warmup_rows(names) == screen.LONG_MOM_LOOKBACK + 1
+    sfn = screen.make_signal_fn(factors=names)
+    bfn = screen.make_bayes_signal_fn(horizon=21, min_obs=100, factors=names)
+    weights = screen.default_weights(factors=names)
+    checked = 0
+    for i in range(260, len(prices), 29):
+        w = prices.iloc[:i + 1]
+        full = screen.build_features(w, factors=names)
+        pd.testing.assert_series_equal(sfn(w), sc.composite_score(full, weights).iloc[-1],
+                                       check_names=False, rtol=0, atol=1e-10)
+        got = bfn(w)
+        try:
+            post = bayes.fit_weights(full, w, horizon=21)
+        except ValueError:
+            continue
+        if post.n_obs >= 100:
+            ref = sc.composite_score(full, post.weights).iloc[-1]
+            pd.testing.assert_series_equal(got, ref, check_names=False, rtol=0, atol=1e-9)
+            checked += 1
+    assert checked > 5
+
+
+def test_high_proximity_and_unknown_factor():
+    s = pd.Series([1.0, 2.0, 4.0, 3.0, 2.0])
+    hp = ind.high_proximity(s, window=3)                      # min_periods = int(2.7) = 2
+    assert np.isnan(hp.iloc[0]) and hp.iloc[2] == 0.0 and np.isclose(hp.iloc[4], 2 / 4 - 1)
+    holey = pd.Series(np.r_[np.arange(1.0, 301.0)])
+    holey.iloc[150] = np.nan                                   # one missing day
+    assert ind.high_proximity(holey, 252).iloc[260:].notna().all()
+    try:
+        screen.build_features(synthetic.make_prices(n_days=50), factors=["nope"])
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "nope" in str(exc)
+
+
 def test_fast_bayes_resets_on_shorter_window():
     """Reusing an instance on an earlier window must not keep later training rows."""
     prices = _gappy_prices()
