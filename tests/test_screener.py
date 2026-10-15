@@ -917,10 +917,15 @@ def _run_all() -> int:
         try:
             t()
             print(f"PASS {t.__name__}")
-        except Exception:  # noqa: BLE001 - test runner surfaces everything
+        except Exception as exc:  # noqa: BLE001 - test runner surfaces everything
             failures += 1
             print(f"FAIL {t.__name__}")
             traceback.print_exc()
+            if os.environ.get("GITHUB_ACTIONS"):       # surface in the PR checks UI
+                where = traceback.extract_tb(exc.__traceback__)[-1]
+                msg = f"{type(exc).__name__}: {exc}".replace("\n", " ")[:500]
+                print(f"::error file=tests/test_screener.py,line={where.lineno},"
+                      f"title=FAIL {t.__name__}::{msg} (at {where.filename}:{where.lineno})")
     print(f"\n{len(tests) - failures}/{len(tests)} passed")
     return 1 if failures else 0
 
