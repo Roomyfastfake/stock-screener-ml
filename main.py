@@ -139,6 +139,33 @@ def cmd_fetch(args) -> None:
     _load_prices(args)
 
 
+def cmd_analyze(args) -> None:
+    """Factor research: rank IC, IC decay, quintile spreads, factor correlation."""
+    from screener import research
+    prices = _load_prices(args)
+    fund = _fundamentals(args, prices)
+    factors = screen.build_features(prices, fundamentals=fund)
+    rep = research.report(factors, prices, horizon=args.horizon)
+    pd.set_option("display.width", 140)
+    print(f"\n== Rank IC, {args.horizon}d forward return from next close "
+          f"(non-overlapping dates) ==")
+    print(rep["ic"].round(3).to_string())
+    print("\n== Mean IC by horizon (decay) ==")
+    print(rep["decay"].round(3).to_string())
+    print(f"\n== Mean {args.horizon}d forward return by factor quintile ==")
+    print((rep["quantiles"].drop(columns="spread_t") * 100).round(2).astype(str).add("%")
+          .join(rep["quantiles"]["spread_t"].round(2)).to_string())
+    print("\n== Average cross-sectional rank correlation between factors ==")
+    print(rep["correlation"].round(2).to_string())
+    if args.out:
+        import pathlib
+        out = pathlib.Path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
+        for name, table in rep.items():
+            table.to_csv(out / f"{name}.csv")
+        print(f"\ntables written to {out}")
+
+
 def cmd_check_fundamentals(args) -> None:
     """Fetch/cache SEC fundamentals for the universe and run the TTM validation gate."""
     from screener import fundamentals as fu
@@ -232,6 +259,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("demo", parents=[common]).set_defaults(func=cmd_demo)
     sub.add_parser("fetch", parents=[common],
                    help="warm the price cache for --universe/--tickers").set_defaults(func=cmd_fetch)
+    analyze = sub.add_parser("analyze", parents=[common],
+                             help="factor research: IC, decay, quintiles, correlation")
+    analyze.add_argument("--out", default=None, help="directory for CSV tables")
+    analyze.set_defaults(func=cmd_analyze)
     sub.add_parser("check-fundamentals", parents=[common],
                    help="fetch SEC fundamentals and run the TTM validation gate"
                    ).set_defaults(func=cmd_check_fundamentals)

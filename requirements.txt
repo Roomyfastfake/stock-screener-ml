@@ -1,6 +1,5 @@
-﻿numpy
+numpy
 pandas
 yfinance
-scipy
 pyarrow
 lxml

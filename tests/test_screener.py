@@ -21,6 +21,7 @@ from screener import bayes
 from screener import cache
 from screener import fundamentals as fu
 from screener import indicators as ind
+from screener import research
 from screener import score as sc
 from screener import screen
 from screener import synthetic
@@ -638,6 +639,60 @@ def test_signals_with_fundamentals_match_reference():
         else:
             bfn(w)
     assert set(screen.build_features(prices, fundamentals=fund)) >= {"roe", "rev_growth"}
+
+
+# --------------------------------------------------------------------------- #
+# factor research
+# --------------------------------------------------------------------------- #
+def test_rank_ic_matches_pandas_spearman():
+    rng = np.random.default_rng(0)
+    idx = pd.bdate_range("2020-01-01", periods=5)
+    f = pd.DataFrame(rng.normal(size=(5, 30)), index=idx)
+    r = pd.DataFrame(rng.normal(size=(5, 30)), index=idx)
+    f.iloc[2, :4] = np.nan                                     # names missing on one side only
+    r.iloc[2, 4:7] = np.nan
+    ic = research.rank_ic(f, r, idx)
+    for d in idx:
+        ok = f.loc[d].notna() & r.loc[d].notna()
+        ref = f.loc[d][ok].corr(r.loc[d][ok], method="spearman")
+        assert np.isclose(ic[d], ref)
+
+
+def test_research_uses_next_close_timing():
+    """Exposure at t drives the t -> t+1 return. Entering at the next close (the
+    backtest's timing) must not see it; a same-close entry would."""
+    prices, exposure = synthetic.make_factor_panel(true_beta=0.03, seed=1, n_days=800)
+    dates = research.sample_dates(prices.index, 1, step=1)
+    same_close = research.rank_ic(exposure, research.forward_returns(prices, 1, lag=0), dates)
+    next_close = research.rank_ic(exposure, research.forward_returns(prices, 1), dates)
+    assert same_close.mean() > 0.5
+    assert abs(next_close.mean()) < 0.03
+
+
+def test_research_finds_momentum_and_spread():
+    prices = synthetic.make_prices(n_tickers=40, n_days=900, seed=0, drift_spread=0.002)
+    factors = screen.build_features(prices)
+    ic = research.ic_table(factors, prices, horizon=21)
+    assert ic.loc["momentum", "ic_mean"] > 0.1 and ic.loc["momentum", "t_stat"] > 3
+    q = research.quantile_returns(factors["momentum"], prices, horizon=21)
+    assert q["spread_mean"] > 0 and q["spread_t"] > 2
+    assert q["quantile_mean"].iloc[-1] > q["quantile_mean"].iloc[0]
+    # Non-overlapping sampling: one date per 21 rows.
+    assert ic.loc["momentum", "n_dates"] <= len(prices) // 21 + 1
+
+
+def test_factor_correlation_identities():
+    prices = synthetic.make_prices(n_tickers=25, n_days=400, seed=3)
+    m = screen.build_features(prices)["momentum"]
+    dates = research.sample_dates(prices.index, 21)
+    corr = research.factor_correlation({"a": m, "b": -m, "c": m}, dates)
+    assert np.isclose(corr.loc["a", "c"], 1.0) and np.isclose(corr.loc["a", "b"], -1.0)
+    assert np.allclose(corr.to_numpy(), corr.to_numpy().T)
+
+
+def test_cli_analyze_runs_offline():
+    args = cli.build_parser().parse_args(["analyze", "--synthetic"])
+    cli.cmd_analyze(args)
 
 
 # --------------------------------------------------------------------------- #
