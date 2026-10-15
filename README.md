@@ -85,6 +85,19 @@ No price factor has a significant IC in large caps over this period. The low-vol
 
 The `backtester` engine (daily marking, NAV costs) on today's members gave 18.5% CAGR, Sharpe 0.90, beta 0.95, alpha 5.1%; that alpha is the same survivorship effect.
 
+### Is any variant better than luck? (`main.py sweep`)
+
+24 variants (8 factor sets: the default composite, each single factor including 12-1 momentum and 52-week-high, and 12-1 momentum plus reversal; each holding 10, 25 or 50 names), point-in-time membership, all starting on the same date (2016, after the longest 252-day warm-up), judged on active return against SPY marked on the same dates:
+
+| Best variants by information ratio | CAGR | Sharpe | vs SPY / yr | Info ratio |
+|---|---|---|---|---|
+| 6-1 momentum, top 10 | 17.3% | 0.72 | +1.7% | 0.19 |
+| 12-1 momentum, top 25 | 16.6% | 0.81 | +1.0% | 0.15 |
+| 12-1 momentum, top 10 | 15.5% | 0.69 | -0.1% | 0.11 |
+| SPY | 15.6% | 1.01 | | |
+
+The best variant on its own has a 73% probability of a positive true active return. **Deflated for the 24 trials, that drops to 0.05** ([Bailey and Lopez de Prado 2014](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2460551)): the best result is what luck alone would produce from this many tries. 16 of the 24 variants trail SPY outright; low-vol and 52-week-high trail it by 7 to 10 points a year.
+
 ## Why Bayesian Scoring?
 
 The baseline screener uses hard-coded factor weights. The Bayesian layer estimates factor weights from historical factor values and next-period returns using a simple ridge/Bayesian linear regression approach.
@@ -118,6 +131,9 @@ py -3.14 main.py backtest --universe sp500-pit --start 2015-01-01 --offline --to
 py -3.14 main.py analyze --universe sp500-pit --start 2015-01-01 --offline --out reports\research
 py -3.14 main.py analyze --universe sp500-pit --offline --factors momentum,mom_12_1,high_52w,trend,low_vol,reversal
 
+# 24-variant grid with deflated Sharpe on active return vs SPY (~30 s)
+py -3.14 main.py sweep --start 2015-01-01 --offline --out reports\sweep.csv
+
 # One shareable HTML page: PIT vs biased backtests, equity/drawdown vs SPY, IC, quintiles (~2 min)
 py -3.14 main.py report --start 2015-01-01 --offline --top-n 25 --out reports\research_report.html
 
@@ -141,7 +157,7 @@ py -3.14 tests\test_screener.py
 Expected result:
 
 ```text
-63/63 passed
+65/65 passed
 ```
 
 ## Roadmap

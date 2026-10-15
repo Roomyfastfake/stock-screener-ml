@@ -43,6 +43,12 @@ GitHub: Roomyfastfake/stock-screener-ml. See README.md for usage and roadmap.
 - Headline (README "Results"): on point-in-time membership, fixed weights 12.6% CAGR
   Sharpe 0.75, Bayes 9.6% / 0.47, SPY 13.9% / 0.97. No price factor has significant IC.
   Report PIT numbers as the primary result; `sp500` (today's members) is biased.
+- `main.py report` (HTML research page, screener/report.py), `main.py sweep` (24 variants,
+  common start, deflated Sharpe on active return vs SPY: best IR 0.19, DSR 0.05 = luck),
+  `screen.make_panel_signal_fn` (precomputed composite, exact, used by sweeps), factor
+  registry `screen.FACTORS` with `--factors` (adds mom_12_1, high_52w), ruff lint in CI.
+- Any new variant added to a sweep raises the deflation bar; report DSR with the trial
+  count, never the best raw Sharpe alone.
 - Known limits: 130 delisted former members have no Yahoo prices (77% of 2015 members
   priced, 99% by 2026).
 - Branch stack: feat/costs-turnover -> feat/universe-cache -> perf/fast-signals

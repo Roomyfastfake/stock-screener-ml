@@ -16,8 +16,46 @@ overlap and the t-stats are not inflated by autocorrelation.
 """
 from __future__ import annotations
 
+from statistics import NormalDist
+
 import numpy as np
 import pandas as pd
+
+_N = NormalDist()
+EULER_GAMMA = 0.5772156649015329
+
+
+def probabilistic_sharpe(returns: pd.Series, sr_benchmark: float = 0.0) -> float:
+    """P(true per-period Sharpe > ``sr_benchmark``), adjusting for sample length,
+    skew and kurtosis (Bailey and Lopez de Prado 2012). Per-period units."""
+    r = pd.Series(returns).dropna().to_numpy(dtype=float)
+    n = len(r)
+    if n < 3 or r.std(ddof=1) == 0:
+        return float("nan")
+    sr = r.mean() / r.std(ddof=1)
+    z = (r - r.mean()) / r.std(ddof=0)
+    skew, kurt = float((z ** 3).mean()), float((z ** 4).mean())
+    denom = 1.0 - skew * sr + (kurt - 1.0) / 4.0 * sr ** 2
+    if denom <= 0:
+        return float("nan")
+    return float(_N.cdf((sr - sr_benchmark) * np.sqrt(n - 1) / np.sqrt(denom)))
+
+
+def expected_max_sharpe(n_trials: int, sr_variance: float) -> float:
+    """Expected maximum of ``n_trials`` Sharpe ratios that are pure noise."""
+    if n_trials < 2:
+        return 0.0
+    return float(np.sqrt(sr_variance) * ((1 - EULER_GAMMA) * _N.inv_cdf(1 - 1 / n_trials)
+                                         + EULER_GAMMA * _N.inv_cdf(1 - 1 / (n_trials * np.e))))
+
+
+def deflated_sharpe(returns: pd.Series, trial_sharpes) -> float:
+    """PSR of the chosen strategy against the best Sharpe expected from luck alone
+    given every trial run (Bailey and Lopez de Prado 2014). Per-period Sharpes."""
+    trials = np.asarray(list(trial_sharpes), dtype=float)
+    trials = trials[np.isfinite(trials)]
+    sr0 = expected_max_sharpe(len(trials), float(trials.var(ddof=1)) if len(trials) > 1 else 0.0)
+    return probabilistic_sharpe(returns, sr0)
 
 
 def forward_returns(prices: pd.DataFrame, horizon: int, lag: int = 1) -> pd.DataFrame:

@@ -147,6 +147,20 @@ def make_signal_fn(weights: dict[str, float] | None = None,
     return signal_fn
 
 
+def make_panel_signal_fn(composite: pd.DataFrame) -> Callable[[pd.DataFrame], pd.Series]:
+    """Signal that reads a precomputed ``(dates x tickers)`` composite at the window end.
+
+    Exact for this package's factors: each factor at date ``d`` depends only on
+    prices up to ``d`` (pinned by the truncation and poisoned-future tests), so
+    computing the whole panel once equals recomputing per rebalance. Used by
+    parameter sweeps, where per-rebalance recomputation would dominate run time.
+    """
+    def signal_fn(price_window: pd.DataFrame) -> pd.Series:
+        return composite.loc[price_window.index[-1]].reindex(price_window.columns)
+
+    return signal_fn
+
+
 def mask_to_members(signal_fn: Callable[[pd.DataFrame], pd.Series],
                     members: pd.DataFrame) -> Callable[[pd.DataFrame], pd.Series]:
     """Only names that are index members on the signal date are eligible.

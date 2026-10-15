@@ -744,6 +744,34 @@ def test_report_builds_valid_page():
     assert np.isfinite(stats["sharpe"])
 
 
+def test_panel_signal_equals_per_rebalance_signal():
+    """Precomputing the composite once is exact (factors at d use data <= d)."""
+    prices = _gappy_prices()
+    names = list(screen.FACTORS)
+    comp = sc.composite_score(screen.build_features(prices, factors=names),
+                              screen.default_weights(factors=names))
+    fast, slow = screen.make_panel_signal_fn(comp), screen.make_signal_fn(factors=names)
+    for i in range(260, len(prices), 53):
+        w = prices.iloc[:i + 1]
+        pd.testing.assert_series_equal(fast(w), slow(w), check_names=False, rtol=0, atol=1e-10)
+    a = bt.backtest(prices, fast, top_n=4, cost_bps=10)
+    b = bt.backtest(prices, slow, top_n=4, cost_bps=10)
+    pd.testing.assert_series_equal(a.period_returns, b.period_returns, rtol=0, atol=1e-12)
+
+
+def test_deflated_sharpe_behaviour():
+    rng = np.random.default_rng(0)
+    good = pd.Series(rng.normal(0.02, 0.04, 240))            # monthly Sharpe 0.5, 20 years
+    noise = pd.Series(rng.normal(0.0, 0.04, 240))
+    assert research.probabilistic_sharpe(good) > 0.99
+    assert 0.05 < research.probabilistic_sharpe(noise) < 0.95
+    # The same result is less convincing after many trials than after one.
+    many = rng.normal(0.0, 0.07, 200)
+    assert research.deflated_sharpe(good, many) < research.probabilistic_sharpe(good)
+    assert research.expected_max_sharpe(1, 0.01) == 0.0
+    assert research.expected_max_sharpe(100, 0.01) > research.expected_max_sharpe(10, 0.01) > 0
+
+
 def test_cli_analyze_runs_offline():
     args = cli.build_parser().parse_args(["analyze", "--synthetic"])
     cli.cmd_analyze(args)

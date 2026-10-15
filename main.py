@@ -249,6 +249,60 @@ def cmd_report(args) -> None:
     print(f"report written to {out}")
 
 
+SWEEP_FACTOR_SETS = {
+    "default": None, "momentum": ["momentum"], "mom_12_1": ["mom_12_1"],
+    "high_52w": ["high_52w"], "trend": ["trend"], "low_vol": ["low_vol"],
+    "reversal": ["reversal"], "mom_12_1+reversal": ["mom_12_1", "reversal"],
+}
+SWEEP_TOP_N = (10, 25, 50)
+
+
+def cmd_sweep(args) -> None:
+    """Grid of variants on point-in-time membership, judged with the deflated Sharpe."""
+    from screener import report, research
+    from screener import score as sc
+    args.universe = "sp500-pit"
+    prices = _load_prices(args)
+    members = _members(args, prices)
+    spy = cache.PriceCache(args.cache_dir).get([args.benchmark or "SPY"], start=args.start,
+                                               end=args.end, offline=args.offline).iloc[:, 0]
+    # Every variant starts on the same date: the longest factor warm-up of the grid.
+    warm = max(screen.warmup_rows(f) for f in SWEEP_FACTOR_SETS.values())
+    rows, active = {}, {}
+    spy_stats = None
+    for name, factors in SWEEP_FACTOR_SETS.items():
+        feats = screen.build_features(prices, factors=factors)
+        comp = sc.composite_score(feats, screen.default_weights(factors=factors)).where(members)
+        sfn = screen.make_panel_signal_fn(comp)
+        for n in SWEEP_TOP_N:
+            res = bt.backtest(prices, sfn, top_n=n, cost_bps=args.cost_bps, min_history=warm)
+            curve, spy_stats = report.benchmark_curve(spy, res)
+            spy_r = curve.pct_change().dropna()
+            key = f"{name}, top {n}"
+            active[key] = res.period_returns - spy_r.reindex(res.period_returns.index)
+            ir = active[key].mean() / active[key].std(ddof=1) * 12 ** 0.5
+            rows[key] = {**{k: res.stats[k] for k in ("cagr", "ann_vol", "sharpe", "max_drawdown")},
+                         "excess_vs_spy": res.stats["cagr"] - spy_stats["cagr"], "info_ratio": ir}
+            print(f"  {key:<28} cagr {res.stats['cagr']:6.1%}  sharpe {res.stats['sharpe']:5.2f}  IR {ir:5.2f}")
+    table = pd.DataFrame(rows).T.sort_values("info_ratio", ascending=False)
+    best = table.index[0]
+    trial_ir = [a.mean() / a.std(ddof=1) for a in active.values()]
+    dsr = research.deflated_sharpe(active[best], trial_ir)
+    psr = research.probabilistic_sharpe(active[best], 0.0)
+    pd.set_option("display.width", 160)
+    print(f"\n== {len(trial_ir)} variants, point-in-time S&P 500, common start, ranked by "
+          f"information ratio vs SPY ==")
+    print(table.round(3).to_string())
+    print(f"\nSPY on the same dates: cagr {spy_stats['cagr']:.1%}, sharpe {spy_stats['sharpe']:.2f}")
+    print(f"Best variant vs SPY: {best} (info ratio {table.loc[best, 'info_ratio']:.2f})")
+    print(f"  P[true active return > 0], this variant alone:        {psr:.2f}")
+    print(f"  deflated, given {len(trial_ir)} variants were tried:         {dsr:.2f}")
+    print("  Below 0.95 the outperformance is consistent with luck.")
+    if args.out:
+        table.to_csv(args.out)
+        print(f"table written to {args.out}")
+
+
 def cmd_check_fundamentals(args) -> None:
     """Fetch/cache SEC fundamentals for the universe and run the TTM validation gate."""
     from screener import fundamentals as fu
@@ -362,6 +416,10 @@ def build_parser() -> argparse.ArgumentParser:
                          help="HTML research report: point-in-time vs biased backtests, factor IC")
     rpt.add_argument("--out", default=None, help="output HTML path")
     rpt.set_defaults(func=cmd_report)
+    swp = sub.add_parser("sweep", parents=[common],
+                         help="grid of factor sets x portfolio sizes with deflated Sharpe")
+    swp.add_argument("--out", default=None, help="CSV path for the results table")
+    swp.set_defaults(func=cmd_sweep)
     sub.add_parser("check-fundamentals", parents=[common],
                    help="fetch SEC fundamentals and run the TTM validation gate"
                    ).set_defaults(func=cmd_check_fundamentals)
