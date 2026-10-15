@@ -656,7 +656,8 @@ def test_rank_ic_matches_pandas_spearman():
     ic = research.rank_ic(f, r, idx)
     for d in idx:
         ok = f.loc[d].notna() & r.loc[d].notna()
-        ref = f.loc[d][ok].corr(r.loc[d][ok], method="spearman")
+        # Spearman = Pearson on ranks (pandas' method="spearman" would need scipy).
+        ref = f.loc[d][ok].rank().corr(r.loc[d][ok].rank())
         assert np.isclose(ic[d], ref)
 
 
