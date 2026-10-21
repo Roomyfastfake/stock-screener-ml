@@ -46,7 +46,7 @@ Implemented:
 * Walk-forward Bayesian backtest (weights refit each rebalance on past data only)
 * Transaction costs (`--cost-bps`, default 10 bps per side) and one-way turnover reporting
 * S&P 500 universe (`--universe sp500`, bundled `data/sp500.csv` snapshot) and local parquet price cache
-* Optional `--engine backtester` route to the sibling [backtester](../backtester) package (long-short, weighting schemes, benchmark stats, HTML tearsheet)
+* Optional `--engine backtester` route to the bundled [backtester](packages/backtester) package (long-short, weighting schemes, benchmark stats, HTML tearsheet)
 
 * Point-in-time S&P 500 membership (`--universe sp500-pit`): only names that were index members on each signal date are eligible
 * Factor research (`main.py analyze`): rank IC, IC decay, quintile spreads, factor correlation
@@ -140,7 +140,7 @@ py -3.14 main.py sweep --start 2015-01-01 --offline --out reports\sweep.csv
 py -3.14 main.py report --start 2015-01-01 --offline --top-n 25 --out reports\research_report.html
 
 # Through the backtester package, with benchmark stats and a tearsheet
-py -3.14 -m pip install -e ..\backtester
+py -3.14 -m pip install -e .\packages\backtester
 py -3.14 main.py backtest --universe sp500 --start 2015-01-01 --top-n 25 `
     --engine backtester --cost-model nav --benchmark SPY --tearsheet reports\sp500.html
 

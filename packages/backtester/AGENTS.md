@@ -1,8 +1,9 @@
 # backtester
 
-Standalone backtesting engine, spun off from the sibling project
-`stock-screener-ml` (GitHub: Roomyfastfake/stock-screener-ml, local clone at
-`C:\Users\TANUSH\projects\stock-screener-ml`).
+Standalone backtesting engine, part of the `stock-screener-ml` repo
+(GitHub: Roomyfastfake/stock-screener-ml) at `packages/backtester`. It was a separate
+repo until 2026-10-21 and was merged in with its history. It stays independent:
+nothing here may import from `screener`.
 
 ## Role (integration plan agreed 2026-10-14, see screener AGENTS.md)
 - **stock-screener-ml = alpha layer**: data, universe, factors, scoring, walk-forward
@@ -13,10 +14,10 @@ Standalone backtesting engine, spun off from the sibling project
 - Contract (the only coupling): `signal_fn(prices[dates x tickers] up to and
   including t) -> Series[ticker -> score]`, higher = better, NaN = ineligible.
   Signal after close t, fill at next close.
-- Packaged via `pyproject.toml`; screener installs with `pip install -e ../backtester`.
-- Next on the screener side: `--engine backtester` routes `backtest` through this
-  package; keep `screener/backtest.py` as fallback until parity holds on real data.
-  Later shared extras: factor attribution, parameter sweeps, Streamlit app, CI.
+- Packaged via `pyproject.toml`; from the repo root install with
+  `pip install -e ./packages/backtester`.
+- The screener's `--engine backtester` routes `backtest` through this package;
+  `screener/backtest.py` stays as the no-dependency fallback.
 
 ## Layout
 - `backtester/engine.py`: `backtest(...) -> BacktestResult`.
@@ -28,8 +29,8 @@ Standalone backtesting engine, spun off from the sibling project
 - `backtester/report.py`: `tearsheet(result, path)` self-contained HTML.
 - `backtester/synthetic.py`: deterministic prices + a momentum `signal_fn`.
 - Tests: `py -3 tests/test_backtester.py` (tiny runner, no pytest; reports
-  passed/skipped/failed). Set `SCREENER_PATH` to the stock-screener-ml folder if
-  it is not a sibling, otherwise the live parity test is SKIPPED.
+  passed/skipped/failed). The live parity test finds the screener as an ancestor
+  folder; `SCREENER_PATH` overrides.
 - Demo: `py -3 examples/demo.py out.html`.
 
 ## Decisions
@@ -67,7 +68,7 @@ Standalone backtesting engine, spun off from the sibling project
 - Every timing rule gets a hand-checked test; lookahead tests poison future rows.
 - Parity tests: screener's two hand-checked fixtures, plus a live comparison
   against `stock-screener-ml/screener/backtest.py` when it is on disk
-  (`SCREENER_PATH` env var or a sibling folder; skipped otherwise).
+  (an ancestor folder, or the `SCREENER_PATH` env var; skipped otherwise).
 - No performance claims from in-sample fits.
 
 ## Status

@@ -112,12 +112,16 @@ def test_additive_cost_model_matches_screener_exactly():
 
 
 def _load_screener_backtest():
-    """Import stock-screener-ml's backtest module from disk, or None if absent."""
+    """Import stock-screener-ml's backtest module from disk, or None if absent.
+
+    This package lives at ``stock-screener-ml/packages/backtester``, so the screener
+    is normally an ancestor folder; ``SCREENER_PATH`` overrides.
+    """
     import importlib.util
     import os
     here = pathlib.Path(__file__).resolve()
     candidates = [os.environ.get("SCREENER_PATH", "")]
-    candidates += [str(p / "stock-screener-ml") for p in here.parents]
+    candidates += [str(p) for p in here.parents]
     for c in candidates:
         f = pathlib.Path(c) / "screener" / "backtest.py" if c else None
         if f and f.exists():

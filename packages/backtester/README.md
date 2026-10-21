@@ -1,6 +1,6 @@
 # backtester
 
-A small, tested cross-sectional backtesting engine for equity strategies (pandas and numpy only). It is the evaluation layer for [stock-screener-ml](https://github.com/Roomyfastfake/stock-screener-ml), but has no dependency on it: any strategy that can score tickers from past prices plugs in.
+A small, tested cross-sectional backtesting engine for equity strategies (pandas and numpy only). It lives inside [stock-screener-ml](https://github.com/Roomyfastfake/stock-screener-ml) as its evaluation layer, but has no dependency on it: any strategy that can score tickers from past prices plugs in.
 
 ## The contract
 
@@ -32,10 +32,10 @@ print(bt.bootstrap_sharpe_ci(res.returns))
 bt.tearsheet(res, "tearsheet.html")
 ```
 
-From the screener:
+From the stock-screener-ml root:
 
 ```powershell
-py -3 -m pip install -e ..\backtester
+py -3 -m pip install -e .\packages\backtester
 py -3 main.py backtest --universe sp500-pit --start 2015-01-01 --engine backtester `
     --cost-model nav --benchmark SPY --tearsheet reports\sp500_pit.html
 ```
@@ -43,10 +43,10 @@ py -3 main.py backtest --universe sp500-pit --start 2015-01-01 --engine backtest
 ## Tests
 
 ```powershell
-py -3 tests\test_backtester.py
+py -3 packages\backtester\tests\test_backtester.py
 ```
 
-Includes hand-checked timing fixtures shared with the screener and, when `stock-screener-ml` is a sibling folder (or `SCREENER_PATH` is set), a live parity test that reproduces its backtest to 1e-12.
+Includes hand-checked timing fixtures shared with the screener and a live parity test that reproduces the screener's own backtest (`screener/backtest.py` in the enclosing repo, or `SCREENER_PATH`) to 1e-12.
 
 Design decisions are recorded in [AGENTS.md](AGENTS.md).
 
