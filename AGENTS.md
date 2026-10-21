@@ -54,8 +54,10 @@ GitHub: Roomyfastfake/stock-screener-ml. See README.md for usage and roadmap.
 - All feature branches merged into main on 2026-10-21 (PR #3, then a merge of
   feat/ci-research which contained the rest). New work: branch from main.
 - Next: real fundamentals run once SEC_USER_AGENT is set; P/E with split handling.
-- Sibling repo `backtester` (C:\Users\TANUSH\projects\backtester, a sibling folder) is a
-  standalone backtesting engine. See Integration plan.
+- The `backtester` engine lives in this repo at `packages/backtester` (merged from its own
+  repo on 2026-10-21 with history kept via git subtree). Install with
+  `pip install -e ./packages/backtester`; its design notes are in packages/backtester/AGENTS.md.
+  CI runs its tests too. It must still import nothing from `screener`.
 
 ## Integration plan with `backtester` (agreed 2026-10-14)
 Split of responsibility:
@@ -69,8 +71,8 @@ Split of responsibility:
 Contract (the only coupling):
 - `signal_fn(prices: DataFrame[dates x tickers], up to and including t) -> Series[ticker -> score]`,
   higher = better, NaN = ineligible. Timing: signal after close t, fill at next close.
-- Backtester is a pip-installable package (`pyproject.toml`); the screener installs
-  it with `pip install -e ../backtester` as an optional dependency.
+- Backtester is a pip-installable package (`packages/backtester/pyproject.toml`); the
+  screener installs it with `pip install -e ./packages/backtester` as an optional dependency.
 
 Migration steps:
 1. Backtester ships v0.1 with the contract and a parity test: on the screener's
@@ -78,4 +80,5 @@ Migration steps:
 2. Screener adds `--engine backtester` that routes `backtest` through the package;
    keep `screener/backtest.py` as the no-dependency fallback until parity holds on real data.
 3. Shared extras: factor attribution, parameter sweeps, one HTML tearsheet, then a
-   Streamlit app (rank -> backtest -> tearsheet) and GitHub Actions CI in both repos.
+   Streamlit app (rank -> backtest -> tearsheet). Steps 1-2, sweeps, the HTML report
+   and CI are done; both now live in this one repo.

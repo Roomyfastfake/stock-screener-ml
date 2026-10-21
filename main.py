@@ -135,12 +135,12 @@ def cmd_backtest(args) -> None:
 
 
 def _run_external(args, prices: pd.DataFrame, signal_fn):
-    """Route through the sibling `backtester` package (pip install -e ../backtester)."""
+    """Route through the bundled `backtester` package (pip install -e ./packages/backtester)."""
     try:
         import backtester
     except ImportError as exc:
         raise SystemExit("--engine backtester needs the package: "
-                         "pip install -e ../backtester") from exc
+                         "pip install -e ./packages/backtester") from exc
     bench = None
     if args.benchmark:
         pc = cache.PriceCache(args.cache_dir, max_age_days=args.max_age_days)
@@ -362,7 +362,7 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--cost-bps", dest="cost_bps", type=float, default=10.0,
                         help="backtest cost per unit traded, in bps per side (0 = frictionless)")
     common.add_argument("--engine", choices=["builtin", "backtester"], default="builtin",
-                        help="builtin = screener/backtest.py; backtester = sibling package")
+                        help="builtin = screener/backtest.py; backtester = packages/backtester")
     # Options below only apply to --engine backtester.
     common.add_argument("--short-n", dest="short_n", type=int, default=0)
     common.add_argument("--weighting", choices=["equal", "score", "inverse_vol"], default="equal")
