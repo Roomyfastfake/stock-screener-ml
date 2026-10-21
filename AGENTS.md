@@ -51,8 +51,8 @@ GitHub: Roomyfastfake/stock-screener-ml. See README.md for usage and roadmap.
   count, never the best raw Sharpe alone.
 - Known limits: 130 delisted former members have no Yahoo prices (77% of 2015 members
   priced, 99% by 2026).
-- Branch stack: feat/costs-turnover -> feat/universe-cache -> perf/fast-signals
-  -> feat/fundamentals -> feat/ci-research.
+- All feature branches merged into main on 2026-10-21 (PR #3, then a merge of
+  feat/ci-research which contained the rest). New work: branch from main.
 - Next: real fundamentals run once SEC_USER_AGENT is set; P/E with split handling.
 - Sibling repo `backtester` (C:\Users\TANUSH\projects\backtester, a sibling folder) is a
   standalone backtesting engine. See Integration plan.
