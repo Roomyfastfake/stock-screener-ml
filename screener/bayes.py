@@ -18,8 +18,8 @@ to :func:`screener.score.composite_score`.
 
 Lookahead note: the *estimator* is agnostic to time -- it just takes ``X`` and
 ``y``. Avoiding lookahead is the caller's job: fit only on data whose forward
-window has already realized. The current backtest does not do walk-forward
-fitting; fitting on the full sample is in-sample research only.
+window has already realized. ``screen.make_bayes_signal_fn`` does this walk-forward
+for the backtest; a full-sample ``fit_weights`` is in-sample research only.
 """
 from __future__ import annotations
 
@@ -68,6 +68,55 @@ class Posterior:
         return dict(zip(self.names, shrink))
 
 
+@dataclass
+class DesignStats:
+    """Sufficient statistics of a regression sample: ``X'X, X'y, y'y, n``.
+
+    The posterior depends on the data only through these, so samples can be
+    accumulated incrementally with ``+`` (used by the walk-forward signal).
+    """
+    names: list[str]
+    xtx: np.ndarray
+    xty: np.ndarray
+    yty: float
+    n: int
+
+    @classmethod
+    def from_arrays(cls, X: np.ndarray, y: np.ndarray, names: list[str]) -> "DesignStats":
+        X = np.asarray(X, dtype=float)
+        y = np.asarray(y, dtype=float).ravel()
+        return cls(list(names), X.T @ X, X.T @ y, float(y @ y), X.shape[0])
+
+    def __add__(self, other: "DesignStats") -> "DesignStats":
+        if self.names != other.names:
+            raise ValueError("cannot add stats over different factors")
+        return DesignStats(self.names, self.xtx + other.xtx, self.xty + other.xty,
+                           self.yty + other.yty, self.n + other.n)
+
+
+def _solve_posterior(s: DesignStats, prior_var: float,
+                     noise_var: float | None) -> tuple[np.ndarray, np.ndarray, float]:
+    p = len(s.names)
+    if s.n == 0:
+        raise ValueError("no observations to fit")
+    if noise_var is None:
+        # Cheap, stable estimate: ridge fit at the prior scale, then residual var.
+        # ||y - X b||^2 expanded so it needs only the sufficient statistics.
+        beta0 = np.linalg.solve(s.xtx + (1.0 / prior_var) * np.eye(p), s.xty)
+        rss = s.yty - 2.0 * beta0 @ s.xty + beta0 @ s.xtx @ beta0
+        noise_var = max(float(rss) / max(s.n - p, 1), 1e-12)
+    precision = s.xtx / noise_var + np.eye(p) / prior_var
+    cov = np.linalg.inv(precision)
+    mean = cov @ s.xty / noise_var
+    return mean, cov, float(noise_var)
+
+
+def posterior_from_stats(stats: DesignStats, prior_var: float = 1.0,
+                         noise_var: float | None = None) -> "Posterior":
+    mean, cov, nv = _solve_posterior(stats, prior_var, noise_var)
+    return Posterior(stats.names, mean, cov, nv, prior_var, n_obs=stats.n)
+
+
 def bayesian_linear_regression(X: np.ndarray, y: np.ndarray,
                                prior_var: float = 1.0,
                                noise_var: float | None = None) -> tuple[np.ndarray, np.ndarray, float]:
@@ -77,24 +126,8 @@ def bayesian_linear_regression(X: np.ndarray, y: np.ndarray,
     ``noise_var`` (sigma^2); if ``None`` it is estimated from ridge residuals.
     """
     X = np.asarray(X, dtype=float)
-    y = np.asarray(y, dtype=float).ravel()
-    n, p = X.shape
-    if n == 0:
-        raise ValueError("no observations to fit")
-
-    if noise_var is None:
-        # Cheap, stable estimate: ridge fit at the prior scale, then residual var.
-        ridge = X.T @ X + (1.0 / prior_var) * np.eye(p)
-        beta0 = np.linalg.solve(ridge, X.T @ y)
-        resid = y - X @ beta0
-        dof = max(n - p, 1)
-        noise_var = float(resid @ resid / dof)
-        noise_var = max(noise_var, 1e-12)
-
-    precision = X.T @ X / noise_var + np.eye(p) / prior_var
-    cov = np.linalg.inv(precision)
-    mean = cov @ (X.T @ y) / noise_var
-    return mean, cov, float(noise_var)
+    stats = DesignStats.from_arrays(X, y, [str(i) for i in range(X.shape[1])])
+    return _solve_posterior(stats, prior_var, noise_var)
 
 
 def _stack_factors(factors: dict[str, pd.DataFrame]) -> tuple[pd.DataFrame, list[str]]:
@@ -106,14 +139,14 @@ def _stack_factors(factors: dict[str, pd.DataFrame]) -> tuple[pd.DataFrame, list
     return long, names
 
 
-def fit_weights(factors: dict[str, pd.DataFrame], prices: pd.DataFrame,
-                horizon: int = 21, prior_var: float = 1.0,
-                noise_var: float | None = None) -> Posterior:
-    """Estimate factor-weight posterior from z-scored factors and forward returns.
+def design_stats(factors: dict[str, pd.DataFrame], prices: pd.DataFrame,
+                 horizon: int = 21) -> DesignStats:
+    """Regression sample from z-scored factors and forward returns, as statistics.
 
     ``y`` is the cross-sectionally demeaned forward return over ``horizon``
     periods (relative performance), matching the screener's cross-sectional
-    ranking objective and absorbing the market move.
+    ranking objective and absorbing the market move. Rows whose forward return
+    has not realized inside ``prices`` are NaN and dropped.
     """
     long, names = _stack_factors(factors)
 
@@ -123,10 +156,14 @@ def fit_weights(factors: dict[str, pd.DataFrame], prices: pd.DataFrame,
     y.name = "y"
 
     data = long.join(y, how="inner").dropna()
-    X = data[names].to_numpy()
-    yv = data["y"].to_numpy()
-    mean, cov, nv = bayesian_linear_regression(X, yv, prior_var, noise_var)
-    return Posterior(names, mean, cov, nv, prior_var, n_obs=len(data))
+    return DesignStats.from_arrays(data[names].to_numpy(), data["y"].to_numpy(), names)
+
+
+def fit_weights(factors: dict[str, pd.DataFrame], prices: pd.DataFrame,
+                horizon: int = 21, prior_var: float = 1.0,
+                noise_var: float | None = None) -> Posterior:
+    """Estimate factor-weight posterior from z-scored factors and forward returns."""
+    return posterior_from_stats(design_stats(factors, prices, horizon), prior_var, noise_var)
 
 
 class BayesianScorer:

@@ -46,16 +46,19 @@ def rebalance_dates(index: pd.DatetimeIndex) -> list[pd.Timestamp]:
 
 def _summary_stats(returns: pd.Series, periods_per_year: int = 12) -> dict:
     if len(returns) == 0:
-        return {"total_return": np.nan, "ann_return": np.nan, "ann_vol": np.nan,
-                "sharpe": np.nan, "max_drawdown": np.nan}
+        return {"total_return": np.nan, "cagr": np.nan, "ann_return": np.nan,
+                "ann_vol": np.nan, "sharpe": np.nan, "max_drawdown": np.nan}
     equity = (1.0 + returns).cumprod()
     total = equity.iloc[-1] - 1.0
+    # Compounded growth rate; ``ann_return`` below annualises the *mean* period
+    # return, which exceeds CAGR by roughly half the variance.
+    cagr = float(equity.iloc[-1] ** (periods_per_year / len(returns)) - 1.0)
     mean, std = returns.mean(), returns.std(ddof=1)
     ann_return = (1.0 + mean) ** periods_per_year - 1.0
     ann_vol = std * np.sqrt(periods_per_year)
     sharpe = np.nan if std == 0 or np.isnan(std) else mean / std * np.sqrt(periods_per_year)
     drawdown = equity / equity.cummax() - 1.0
-    return {"total_return": float(total), "ann_return": float(ann_return),
+    return {"total_return": float(total), "cagr": cagr, "ann_return": float(ann_return),
             "ann_vol": float(ann_vol), "sharpe": float(sharpe),
             "max_drawdown": float(drawdown.min())}
 

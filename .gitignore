@@ -3,3 +3,5 @@
 *.pyo
 .pytest_cache/
 .venv/
+data/cache/
+reports/

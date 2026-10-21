@@ -62,6 +62,16 @@ def low_volatility(close: pd.DataFrame | pd.Series, window: int = 21) -> pd.Data
     return -volatility(close, window)
 
 
+def high_proximity(close: pd.DataFrame | pd.Series, window: int = 252) -> pd.DataFrame | pd.Series:
+    """Closeness to the trailing ``window``-day high: ``close / max - 1`` (<= 0).
+
+    The 52-week-high effect (George and Hwang 2004): names near their high tend
+    to keep outperforming, partly because investors anchor on the high. Needs 90%
+    of the window observed, so one missing day does not blank it for a year.
+    """
+    return close / close.rolling(window, min_periods=int(0.9 * window)).max() - 1.0
+
+
 def rsi(close: pd.DataFrame | pd.Series, window: int = 14) -> pd.DataFrame | pd.Series:
     """Wilder's Relative Strength Index in [0, 100]."""
     delta = close.diff()
