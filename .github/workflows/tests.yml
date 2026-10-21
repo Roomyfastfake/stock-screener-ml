@@ -24,11 +24,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       # The live parity test compares against stock-screener-ml's backtest.py.
-      # Switch ref to main once the screener's feature branches are merged.
       - uses: actions/checkout@v5
         with:
           repository: Roomyfastfake/stock-screener-ml
-          ref: feat/ci-research
+          ref: main
           path: stock-screener-ml
       - uses: actions/setup-python@v6
         with:
